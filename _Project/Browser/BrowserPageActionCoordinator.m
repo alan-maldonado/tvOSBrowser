@@ -5,20 +5,18 @@
 #import "BrowserVideoPlaybackCoordinator.h"
 #import "BrowserWebView.h"
 
-static UIColor *BrowserPageActionTextColor(void) {
-    if (@available(tvOS 13, *)) {
-        return UIColor.labelColor;
-    } else {
-        return UIColor.blackColor;
-    }
-}
-
 @interface BrowserPageActionCoordinator ()
 
 @property (nonatomic, weak) id<BrowserPageActionCoordinatorHost> host;
 @property (nonatomic) BrowserDOMInteractionService *domInteractionService;
 @property (nonatomic) BrowserNavigationService *navigationService;
 @property (nonatomic) BrowserVideoPlaybackCoordinator *videoPlaybackCoordinator;
+@property (nonatomic) UITextField *activeEditableField;
+
+- (void)commitEditableText:(NSString *)text
+                   atPoint:(CGPoint)point
+                   webView:(BrowserWebView *)webView
+                submitForm:(BOOL)submitForm;
 
 @end
 
@@ -78,89 +76,92 @@ static UIColor *BrowserPageActionTextColor(void) {
     if ([placeholder isEqualToString:@""]) {
         placeholder = [fieldTitle isEqualToString:fieldType] ? @"Text Input" : [NSString stringWithFormat:@"%@ Input", fieldTitle];
     }
-    NSString *testedFormResponse = [self.domInteractionService evaluateEditableElementJavaScriptAtPoint:point
-                                                                                                 webView:webView
-                                                                                                    body:@"var target = browserEditableTarget();"
-                                                                                                         "return (target && target.form && target.form.hasAttribute('onsubmit')) ? 'true' : 'false';"];
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Input Text"
-                                                                             message:[fieldTitle capitalizedString]
-                                                                      preferredStyle:UIAlertControllerStyleAlert];
+    NSString *initialValue = [self.domInteractionService evaluateEditableElementJavaScriptAtPoint:point
+                                                                                          webView:webView
+                                                                                             body:@"var target = browserEditableTarget();"
+                                                                                                  "if (!target) { return ''; }"
+                                                                                                  "if (typeof target.value !== 'undefined') { return target.value; }"
+                                                                                                  "return target.textContent || '';"];
+
+    UIView *container = [self.host browserPageActionCoordinatorContainerView];
+    if (container == nil) {
+        return;
+    }
+
+    // Si quedo un campo previo, retirarlo antes de crear el nuevo.
+    [self.activeEditableField removeFromSuperview];
+    self.activeEditableField = nil;
+
+    // Campo de texto invisible (fuera de pantalla): solo sirve para que tvOS
+    // presente el teclado a pantalla completa. Asi no aparece ningun modal.
+    UITextField *hiddenField = [[UITextField alloc] initWithFrame:CGRectMake(-2000.0, -2000.0, 320.0, 44.0)];
+    if ([fieldType isEqualToString:@"url"]) {
+        hiddenField.keyboardType = UIKeyboardTypeURL;
+    } else if ([fieldType isEqualToString:@"email"]) {
+        hiddenField.keyboardType = UIKeyboardTypeEmailAddress;
+    } else if ([fieldType isEqualToString:@"tel"] ||
+               [fieldType isEqualToString:@"number"] ||
+               [fieldType isEqualToString:@"date"] ||
+               [fieldType isEqualToString:@"datetime"] ||
+               [fieldType isEqualToString:@"datetime-local"]) {
+        hiddenField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+    } else {
+        hiddenField.keyboardType = UIKeyboardTypeDefault;
+    }
+    NSString *displayPlaceholder = [placeholder capitalizedString];
+    if (displayPlaceholder.length > 40) {
+        displayPlaceholder = [[[displayPlaceholder substringToIndex:40] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] stringByAppendingString:@"…"];
+    }
+    hiddenField.placeholder = displayPlaceholder;
+    hiddenField.secureTextEntry = [fieldType isEqualToString:@"password"];
+    hiddenField.text = initialValue;
+    hiddenField.returnKeyType = UIReturnKeyDone;
+    [container addSubview:hiddenField];
+    self.activeEditableField = hiddenField;
 
     __weak typeof(self) weakSelf = self;
-    [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-        if ([fieldType isEqualToString:@"url"]) {
-            textField.keyboardType = UIKeyboardTypeURL;
-        } else if ([fieldType isEqualToString:@"email"]) {
-            textField.keyboardType = UIKeyboardTypeEmailAddress;
-        } else if ([fieldType isEqualToString:@"tel"] ||
-                   [fieldType isEqualToString:@"number"] ||
-                   [fieldType isEqualToString:@"date"] ||
-                   [fieldType isEqualToString:@"datetime"] ||
-                   [fieldType isEqualToString:@"datetime-local"]) {
-            textField.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
-        } else {
-            textField.keyboardType = UIKeyboardTypeDefault;
-        }
-        textField.placeholder = [placeholder capitalizedString];
-        if ([fieldType isEqualToString:@"password"]) {
-            textField.secureTextEntry = YES;
-        }
-        textField.text = [weakSelf.domInteractionService evaluateEditableElementJavaScriptAtPoint:point
-                                                                                           webView:webView
-                                                                                              body:@"var target = browserEditableTarget();"
-                                                                                                   "if (!target) { return ''; }"
-                                                                                                   "if (typeof target.value !== 'undefined') { return target.value; }"
-                                                                                                   "return target.textContent || '';"];
-        textField.textColor = BrowserPageActionTextColor();
-        [textField setReturnKeyType:UIReturnKeyDone];
-    }];
-
-    UIAlertAction *submitAction = [UIAlertAction actionWithTitle:@"Submit"
-                                                           style:UIAlertActionStyleDefault
-                                                         handler:^(__unused UIAlertAction *action) {
-        UITextField *inputTextField = alertController.textFields.firstObject;
-        NSString *escapedText = [weakSelf.domInteractionService javaScriptEscapedString:inputTextField.text];
-        [weakSelf.domInteractionService evaluateEditableElementJavaScriptAtPoint:point
-                                                                         webView:webView
-                                                                            body:[NSString stringWithFormat:@"var target = browserEditableTarget();"
-                                                                                  "if (!target) { return 'false'; }"
-                                                                                  "if (typeof target.value !== 'undefined') { target.value = '%@'; }"
-                                                                                  "else { target.textContent = '%@'; }"
-                                                                                  "if (target.dispatchEvent) {"
-                                                                                      "target.dispatchEvent(new Event('input', { bubbles: true }));"
-                                                                                      "target.dispatchEvent(new Event('change', { bubbles: true }));"
-                                                                                  "}"
-                                                                                  "if (target.form) { target.form.submit(); }"
-                                                                                  "return 'true';", escapedText, escapedText]];
-    }];
-    UIAlertAction *doneAction = [UIAlertAction actionWithTitle:@"Done"
-                                                         style:UIAlertActionStyleDefault
-                                                       handler:^(__unused UIAlertAction *action) {
-        UITextField *inputTextField = alertController.textFields.firstObject;
-        NSString *escapedText = [weakSelf.domInteractionService javaScriptEscapedString:inputTextField.text];
-        [weakSelf.domInteractionService evaluateEditableElementJavaScriptAtPoint:point
-                                                                         webView:webView
-                                                                            body:[NSString stringWithFormat:@"var target = browserEditableTarget();"
-                                                                                  "if (!target) { return 'false'; }"
-                                                                                  "if (typeof target.value !== 'undefined') { target.value = '%@'; }"
-                                                                                  "else { target.textContent = '%@'; }"
-                                                                                  "if (target.dispatchEvent) {"
-                                                                                      "target.dispatchEvent(new Event('input', { bubbles: true }));"
-                                                                                      "target.dispatchEvent(new Event('change', { bubbles: true }));"
-                                                                                  "}"
-                                                                                  "return 'true';", escapedText, escapedText]];
-    }];
-    [alertController addAction:doneAction];
-    if ([testedFormResponse isEqualToString:@"true"]) {
-        [alertController addAction:submitAction];
+    // Al salir del teclado se escribe en la pagina y se retira el campo.
+    if (@available(tvOS 14.0, *)) {
+        [hiddenField addAction:[UIAction actionWithHandler:^(__unused UIAction *action) {
+            typeof(self) strongSelf = weakSelf;
+            UITextField *field = strongSelf.activeEditableField;
+            if (field == nil) {
+                return;
+            }
+            strongSelf.activeEditableField = nil;
+            [strongSelf commitEditableText:field.text atPoint:point webView:webView submitForm:NO];
+            [field removeFromSuperview];
+        }] forControlEvents:UIControlEventEditingDidEnd];
     }
-    [alertController addAction:[UIAlertAction actionWithTitle:nil style:UIAlertActionStyleCancel handler:nil]];
-    [self.host browserPageActionCoordinatorPresentViewController:alertController];
 
-    UITextField *inputTextField = alertController.textFields.firstObject;
-    if ([[inputTextField.text stringByReplacingOccurrencesOfString:@" " withString:@""] isEqualToString:@""]) {
-        [inputTextField becomeFirstResponder];
-    }
+    // Abrir el teclado de inmediato (en el siguiente runloop).
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [weakSelf.activeEditableField becomeFirstResponder];
+    });
+}
+
+- (void)commitEditableText:(NSString *)text
+                   atPoint:(CGPoint)point
+                   webView:(BrowserWebView *)webView
+                submitForm:(BOOL)submitForm {
+    NSString *escapedText = [self.domInteractionService javaScriptEscapedString:text];
+    NSString *submitClause = submitForm ? @"if (target.form) { target.form.submit(); }" : @"";
+    [self.domInteractionService evaluateEditableElementJavaScriptAtPoint:point
+                                                                 webView:webView
+                                                                    body:[NSString stringWithFormat:@"var v = '%@';"
+                                                                          "var target = browserEditableTarget();"
+                                                                          "if (!target) { return 'false'; }"
+                                                                          "if (typeof target.value !== 'undefined') {"
+                                                                              "var proto = (window.HTMLTextAreaElement && target instanceof window.HTMLTextAreaElement) ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;"
+                                                                              "var desc = Object.getOwnPropertyDescriptor(proto, 'value');"
+                                                                              "if (desc && desc.set) { desc.set.call(target, v); } else { target.value = v; }"
+                                                                          "} else { target.textContent = v; }"
+                                                                          "if (target.dispatchEvent) {"
+                                                                              "target.dispatchEvent(new Event('input', { bubbles: true }));"
+                                                                              "target.dispatchEvent(new Event('change', { bubbles: true }));"
+                                                                          "}"
+                                                                          "%@"
+                                                                          "return 'true';", escapedText, submitClause]];
 }
 
 - (BOOL)handlePageSelectionAtDOMPoint:(CGPoint)point webView:(BrowserWebView *)webView {

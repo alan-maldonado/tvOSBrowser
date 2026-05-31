@@ -606,6 +606,10 @@ static UIColor *kTextColor(void) {
     return [self.tabCoordinator createNewTabWithRequest:request];
 }
 
+- (UIView *)browserPageActionCoordinatorContainerView {
+    return self.view;
+}
+
 #pragma mark - BrowserRemoteInputControllerHost
 
 - (UIScrollView *)browserRemoteInputControllerActiveScrollView {

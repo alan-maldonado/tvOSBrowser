@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)browserPageActionCoordinatorPresentViewController:(UIViewController *)viewController;
 - (BOOL)browserPageActionCoordinatorCreateNewTabWithRequest:(NSURLRequest *)request;
+- (UIView *)browserPageActionCoordinatorContainerView;
 
 @end
 

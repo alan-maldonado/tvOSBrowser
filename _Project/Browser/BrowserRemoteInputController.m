@@ -58,6 +58,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic) CFTimeInterval lastDirectSelectPressTimestamp;
 @property (nonatomic) CFTimeInterval lastSelectPressTimestamp;
 @property (nonatomic) BOOL awaitingSecondSelectPress;
+@property (nonatomic) BOOL cursorShowingPointer;
 
 @end
 
@@ -428,18 +429,18 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
             self.lastTouchLocation = location;
         }
 
-        self.cursorView.image = BrowserDefaultCursor();
         if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
-            if ([self.host browserRemoteInputControllerTabOverviewContainsPoint:self.cursorView.frame.origin]) {
-                self.cursorView.image = BrowserPointerCursor();
-            }
+            [self updateCursorPointerState:[self.host browserRemoteInputControllerTabOverviewContainsPoint:self.cursorView.frame.origin]];
             break;
         }
         if (self.cursorModeEnabled) {
             NSString *containsLink = [self.host browserRemoteInputControllerHoverStateAtCursorPoint:self.cursorView.frame.origin];
             if ([containsLink isEqualToString:@"true"]) {
-                self.cursorView.image = BrowserPointerCursor();
+                [self updateCursorPointerState:YES];
+            } else if ([containsLink isEqualToString:@"false"]) {
+                [self updateCursorPointerState:NO];
             }
+            // Respuesta vacía/ambigua del WebView: conservar el cursor actual para evitar el parpadeo.
         }
         break;
     }
@@ -449,6 +450,14 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 
 - (void)handleTouchesEnded {
     self.lastTouchLocation = CGPointMake(-1, -1);
+}
+
+- (void)updateCursorPointerState:(BOOL)showingPointer {
+    if (self.cursorShowingPointer == showingPointer && self.cursorView.image != nil) {
+        return;
+    }
+    self.cursorShowingPointer = showingPointer;
+    self.cursorView.image = showingPointer ? BrowserPointerCursor() : BrowserDefaultCursor();
 }
 
 @end

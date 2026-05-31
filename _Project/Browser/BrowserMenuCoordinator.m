@@ -121,7 +121,7 @@ typedef void (^BrowserAdvancedMenuItemHandler)(void);
 
     UIView *dimView = [UIView new];
     dimView.translatesAutoresizingMaskIntoConstraints = NO;
-    dimView.backgroundColor = self.usingNativeGlassEffect ? UIColor.clearColor : [UIColor colorWithWhite:0.0 alpha:0.45];
+    dimView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.5];
     dimView.alpha = 0.0;
     [self.view addSubview:dimView];
     self.dimView = dimView;
@@ -136,24 +136,17 @@ typedef void (^BrowserAdvancedMenuItemHandler)(void);
     [self.view addSubview:panelView];
     self.panelView = panelView;
 
-    UIView *panelTint = nil;
-    if (!self.usingNativeGlassEffect) {
-        panelTint = [UIView new];
-        panelTint.translatesAutoresizingMaskIntoConstraints = NO;
-        panelTint.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
-        [panelView.contentView addSubview:panelTint];
-    }
+    UIView *panelTint = [UIView new];
+    panelTint.translatesAutoresizingMaskIntoConstraints = NO;
+    panelTint.backgroundColor = self.usingNativeGlassEffect ? [UIColor colorWithWhite:0.0 alpha:0.4] : [UIColor colorWithWhite:0.0 alpha:0.55];
+    [panelView.contentView addSubview:panelTint];
 
     UILabel *titleLabel = [UILabel new];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     titleLabel.text = self.menuTitle;
     titleLabel.font = [UIFont boldSystemFontOfSize:34.0];
     titleLabel.textAlignment = NSTextAlignmentLeft;
-    if (@available(tvOS 13.0, *)) {
-        titleLabel.textColor = UIColor.labelColor;
-    } else {
-        titleLabel.textColor = UIColor.whiteColor;
-    }
+    titleLabel.textColor = UIColor.whiteColor;
     [panelView.contentView addSubview:titleLabel];
 
     UIView *separator = [UIView new];
@@ -170,11 +163,7 @@ typedef void (^BrowserAdvancedMenuItemHandler)(void);
     footerLabel.text = self.footerText;
     footerLabel.textAlignment = NSTextAlignmentCenter;
     footerLabel.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightRegular];
-    if (@available(tvOS 13.0, *)) {
-        footerLabel.textColor = UIColor.secondaryLabelColor;
-    } else {
-        footerLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.7];
-    }
+    footerLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.7];
     [panelView.contentView addSubview:footerLabel];
 
     UITableView *tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
@@ -341,8 +330,10 @@ typedef void (^BrowserAdvancedMenuItemHandler)(void);
         UIView *focusBackgroundView = [UIView new];
         focusBackgroundView.translatesAutoresizingMaskIntoConstraints = NO;
         focusBackgroundView.tag = kMenuFocusBackgroundTag;
-        focusBackgroundView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.18];
+        focusBackgroundView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.5];
         focusBackgroundView.layer.cornerRadius = 12.0;
+        focusBackgroundView.layer.borderWidth = 2.0;
+        focusBackgroundView.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.9].CGColor;
         focusBackgroundView.alpha = 0.0;
         [cell.contentView addSubview:focusBackgroundView];
 
@@ -371,14 +362,7 @@ typedef void (^BrowserAdvancedMenuItemHandler)(void);
     UILabel *titleLabel = (UILabel *)[cell.contentView viewWithTag:kMenuTitleLabelTag];
     UIView *focusBackgroundView = [cell.contentView viewWithTag:kMenuFocusBackgroundTag];
     titleLabel.text = item.title;
-    UIColor *titleColor = nil;
-    if (item.style == UIAlertActionStyleDestructive) {
-        titleColor = UIColor.redColor;
-    } else if (@available(tvOS 13.0, *)) {
-        titleColor = UIColor.labelColor;
-    } else {
-        titleColor = UIColor.whiteColor;
-    }
+    UIColor *titleColor = (item.style == UIAlertActionStyleDestructive) ? UIColor.redColor : UIColor.whiteColor;
     titleLabel.textColor = titleColor;
     focusBackgroundView.alpha = cell.isFocused ? 1.0 : 0.0;
     return cell;
