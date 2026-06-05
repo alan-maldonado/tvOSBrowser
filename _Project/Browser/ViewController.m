@@ -851,6 +851,13 @@ static UIColor *kTextColor(void) {
     return YES;
 }
 
+- (void)webView:(id)webView didRequestFullscreenWithVideoInfo:(NSDictionary *)videoInfo {
+    (void)webView;
+    // Page fullscreen button pressed (fake-fullscreen user script bridge):
+    // open our native player instead of WebKit's broken tvOS fullscreen.
+    [self.videoPlaybackCoordinator handlePageFullscreenRequestWithInfo:videoInfo];
+}
+
 - (void)webViewDidStartLoad:(id)webView {
     [self.tabCoordinator webViewDidStartLoad:webView];
 }

@@ -35,7 +35,35 @@
 
 @end
 
+// WKUserContentController retains its script message handlers strongly; this
+// weak forwarder breaks the webview -> configuration -> handler -> webview cycle.
+@interface BrowserWeakScriptMessageForwarder : NSObject
+@property (nonatomic, weak) id target;
+@end
+
+@implementation BrowserWeakScriptMessageForwarder
+
++ (void)initialize {
+    if (self == [BrowserWeakScriptMessageForwarder class]) {
+        Protocol *handlerProtocol = objc_getProtocol("WKScriptMessageHandler");
+        if (handlerProtocol != NULL) {
+            class_addProtocol(self, handlerProtocol);
+        }
+    }
+}
+
+- (void)userContentController:(id)userContentController didReceiveScriptMessage:(id)message {
+    SEL forwardSelector = @selector(userContentController:didReceiveScriptMessage:);
+    id target = self.target;
+    if (target != nil && [target respondsToSelector:forwardSelector]) {
+        ((void (*)(id, SEL, id, id))objc_msgSend)(target, forwardSelector, userContentController, message);
+    }
+}
+
+@end
+
 static NSString * const kBrowserWebViewClassName = @"WKWebView";
+static NSString * const kBrowserFullscreenMessageHandlerName = @"browserFullscreen";
 static NSString * const kBrowserWebViewConfigurationClassName = @"WKWebViewConfiguration";
 static NSString * const kBrowserWebsiteDataStoreClassName = @"WKWebsiteDataStore";
 static NSString * const kBrowserUserContentControllerClassName = @"WKUserContentController";
@@ -476,6 +504,150 @@ static NSString *BrowserYouTubeRequestCaptureScript(void) {
     "})();";
 }
 
+// tvOS WebKit routes <video> fullscreen to AVPlayerViewController's
+// enterFullScreenAnimated:, which the OS doesn't support — the transition fails
+// halfway and leaves the page (and the focus system) frozen. Replace the
+// fullscreen APIs with a CSS-based fullscreen that never leaves the page.
+static NSString *BrowserFakeFullscreenScript(void) {
+    return
+    @"(function(){"
+        "if (window.__browserFakeFullscreenInstalled) { return; }"
+        "window.__browserFakeFullscreenInstalled = true;"
+        "var fullscreenElement = null;"
+        "var savedStyle = null;"
+        "var savedOverflow = null;"
+        "function fireEvent(target, name) {"
+            "try { target.dispatchEvent(new Event(name, {bubbles: true})); } catch (e) {}"
+        "}"
+        "function notifyChange() {"
+            "fireEvent(document, 'fullscreenchange');"
+            "fireEvent(document, 'webkitfullscreenchange');"
+        "}"
+        "var pendingElement = null;"
+        "function requestNativeFullscreen(element) {"
+            "if (!element) { return; }"
+            "pendingElement = element;"
+            "var video = (element.tagName === 'VIDEO') ? element : element.querySelector('video');"
+            "var src = '';"
+            "var time = 0;"
+            "if (video) {"
+                "src = video.currentSrc || video.src || '';"
+                "time = video.currentTime || 0;"
+            "}"
+            "var sent = false;"
+            "try {"
+                "if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.browserFullscreen) {"
+                    "window.webkit.messageHandlers.browserFullscreen.postMessage({"
+                        "src: src,"
+                        "time: time,"
+                        "title: document.title || ''"
+                    "});"
+                    "sent = true;"
+                "}"
+            "} catch (e) {}"
+            "if (!sent) { enterFullscreen(element); }"
+        "}"
+        "window.__browserApplyCssFullscreen = function() {"
+            "if (pendingElement) { enterFullscreen(pendingElement); }"
+        "};"
+        "function enterFullscreen(element) {"
+            "if (!element || fullscreenElement === element) { return; }"
+            "if (fullscreenElement) { exitFullscreen(); }"
+            "fullscreenElement = element;"
+            "savedStyle = element.getAttribute('style');"
+            "savedOverflow = document.documentElement.style.overflow;"
+            "element.style.setProperty('position', 'fixed', 'important');"
+            "element.style.setProperty('top', '0', 'important');"
+            "element.style.setProperty('left', '0', 'important');"
+            "element.style.setProperty('width', '100vw', 'important');"
+            "element.style.setProperty('height', '100vh', 'important');"
+            "element.style.setProperty('max-width', 'none', 'important');"
+            "element.style.setProperty('max-height', 'none', 'important');"
+            "element.style.setProperty('margin', '0', 'important');"
+            "element.style.setProperty('padding', '0', 'important');"
+            "element.style.setProperty('z-index', '2147483647', 'important');"
+            "element.style.setProperty('background-color', 'black', 'important');"
+            "if (element.tagName === 'VIDEO') {"
+                "element.style.setProperty('object-fit', 'contain', 'important');"
+                "fireEvent(element, 'webkitbeginfullscreen');"
+            "}"
+            "document.documentElement.style.overflow = 'hidden';"
+            "notifyChange();"
+        "}"
+        "function exitFullscreen() {"
+            "var element = fullscreenElement;"
+            "if (!element) { return; }"
+            "fullscreenElement = null;"
+            "if (savedStyle === null) { element.removeAttribute('style'); }"
+            "else { element.setAttribute('style', savedStyle); }"
+            "savedStyle = null;"
+            "document.documentElement.style.overflow = savedOverflow || '';"
+            "savedOverflow = null;"
+            "if (element.tagName === 'VIDEO') { fireEvent(element, 'webkitendfullscreen'); }"
+            "notifyChange();"
+        "}"
+        "try {"
+            "HTMLVideoElement.prototype.webkitEnterFullscreen = function() { requestNativeFullscreen(this); };"
+            "HTMLVideoElement.prototype.webkitEnterFullScreen = function() { requestNativeFullscreen(this); };"
+            "HTMLVideoElement.prototype.webkitExitFullscreen = function() { exitFullscreen(); };"
+            "HTMLVideoElement.prototype.webkitExitFullScreen = function() { exitFullscreen(); };"
+            "Object.defineProperty(HTMLVideoElement.prototype, 'webkitSupportsFullscreen', { get: function() { return true; }, configurable: true });"
+            "Object.defineProperty(HTMLVideoElement.prototype, 'webkitDisplayingFullscreen', { get: function() { return this === fullscreenElement; }, configurable: true });"
+        "} catch (e) {}"
+        "try {"
+            "Element.prototype.requestFullscreen = function() { requestNativeFullscreen(this); return Promise.resolve(); };"
+            "Element.prototype.webkitRequestFullscreen = function() { requestNativeFullscreen(this); };"
+            "Element.prototype.webkitRequestFullScreen = function() { requestNativeFullscreen(this); };"
+            "document.exitFullscreen = function() { exitFullscreen(); return Promise.resolve(); };"
+            "document.webkitExitFullscreen = function() { exitFullscreen(); };"
+            "document.webkitCancelFullScreen = function() { exitFullscreen(); };"
+            "Object.defineProperty(Document.prototype, 'fullscreenElement', { get: function() { return fullscreenElement; }, configurable: true });"
+            "Object.defineProperty(Document.prototype, 'webkitFullscreenElement', { get: function() { return fullscreenElement; }, configurable: true });"
+            "Object.defineProperty(Document.prototype, 'webkitCurrentFullScreenElement', { get: function() { return fullscreenElement; }, configurable: true });"
+            "Object.defineProperty(Document.prototype, 'fullscreenEnabled', { get: function() { return true; }, configurable: true });"
+            "Object.defineProperty(Document.prototype, 'webkitFullscreenEnabled', { get: function() { return true; }, configurable: true });"
+        "} catch (e) {}"
+    "})();";
+}
+
+static void BrowserInstallUserScriptSource(id configuration, NSString *source) {
+    if (configuration == nil || source.length == 0) {
+        return;
+    }
+
+    Class userContentControllerClass = NSClassFromString(kBrowserUserContentControllerClassName);
+    Class userScriptClass = NSClassFromString(kBrowserUserScriptClassName);
+    if (userContentControllerClass == Nil || userScriptClass == Nil) {
+        return;
+    }
+
+    SEL userContentControllerGetter = NSSelectorFromString(@"userContentController");
+    SEL setUserContentControllerSelector = NSSelectorFromString(@"setUserContentController:");
+    id userContentController = nil;
+    if ([configuration respondsToSelector:userContentControllerGetter]) {
+        userContentController = ((id (*)(id, SEL))objc_msgSend)(configuration, userContentControllerGetter);
+    }
+
+    if (userContentController == nil && [configuration respondsToSelector:setUserContentControllerSelector]) {
+        userContentController = ((id (*)(id, SEL))objc_msgSend)((id)userContentControllerClass, @selector(new));
+        ((void (*)(id, SEL, id))objc_msgSend)(configuration, setUserContentControllerSelector, userContentController);
+    }
+
+    SEL addUserScriptSelector = NSSelectorFromString(@"addUserScript:");
+    SEL userScriptInitializer = NSSelectorFromString(@"initWithSource:injectionTime:forMainFrameOnly:");
+    if (userContentController == nil ||
+        ![userContentController respondsToSelector:addUserScriptSelector] ||
+        ![userScriptClass instancesRespondToSelector:userScriptInitializer]) {
+        return;
+    }
+
+    id userScript = ((id (*)(id, SEL))objc_msgSend)((id)userScriptClass, @selector(alloc));
+    userScript = ((id (*)(id, SEL, id, NSInteger, BOOL))objc_msgSend)(userScript, userScriptInitializer, source, 0, NO);
+    if (userScript != nil) {
+        ((void (*)(id, SEL, id))objc_msgSend)(userContentController, addUserScriptSelector, userScript);
+    }
+}
+
 static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     if (configuration == nil) {
         return;
@@ -521,6 +693,7 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
 @property (nullable, nonatomic, copy) NSString *lastTitle;
 @property (nonatomic, copy) NSString *userAgent;
 @property (nonatomic) BOOL loading;
+@property (nullable, nonatomic, strong) BrowserWeakScriptMessageForwarder *fullscreenMessageForwarder;
 
 @end
 
@@ -566,6 +739,8 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     }
     BrowserConfigurePrivateMediaPreferences(configuration);
     BrowserInstallYouTubeCaptureUserScript(configuration);
+    BrowserInstallUserScriptSource(configuration, BrowserFakeFullscreenScript());
+    [self installFullscreenScriptMessageHandlerOnConfiguration:configuration];
 
     id webViewObject = ((id (*)(id, SEL))objc_msgSend)((id)webViewClass, @selector(alloc));
     SEL initializer = NSSelectorFromString(@"initWithFrame:configuration:");
@@ -873,6 +1048,7 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
 
 - (void)installYouTubeRequestCaptureHook {
     [self stringByEvaluatingJavaScriptFromString:BrowserYouTubeRequestCaptureScript()];
+    [self stringByEvaluatingJavaScriptFromString:BrowserFakeFullscreenScript()];
 }
 
 - (void)setUserAgent:(NSString *)userAgent {
@@ -1002,6 +1178,48 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
 
     if (decisionHandler != nil) {
         decisionHandler(shouldAllow ? 1 : 0);
+    }
+}
+
+#pragma mark - Fullscreen script message bridge
+
+- (void)installFullscreenScriptMessageHandlerOnConfiguration:(id)configuration {
+    SEL userContentControllerGetter = NSSelectorFromString(@"userContentController");
+    if (configuration == nil || ![configuration respondsToSelector:userContentControllerGetter]) {
+        return;
+    }
+    id userContentController = ((id (*)(id, SEL))objc_msgSend)(configuration, userContentControllerGetter);
+    SEL addHandlerSelector = NSSelectorFromString(@"addScriptMessageHandler:name:");
+    if (userContentController == nil || ![userContentController respondsToSelector:addHandlerSelector]) {
+        return;
+    }
+    BrowserWeakScriptMessageForwarder *forwarder = [BrowserWeakScriptMessageForwarder new];
+    forwarder.target = self;
+    self.fullscreenMessageForwarder = forwarder;
+    ((void (*)(id, SEL, id, id))objc_msgSend)(userContentController, addHandlerSelector, forwarder, kBrowserFullscreenMessageHandlerName);
+}
+
+- (void)userContentController:(id)userContentController didReceiveScriptMessage:(id)message {
+    (void)userContentController;
+    SEL nameSelector = NSSelectorFromString(@"name");
+    SEL bodySelector = NSSelectorFromString(@"body");
+    if (![message respondsToSelector:nameSelector] || ![message respondsToSelector:bodySelector]) {
+        return;
+    }
+    NSString *name = ((id (*)(id, SEL))objc_msgSend)(message, nameSelector);
+    if (![name isEqualToString:kBrowserFullscreenMessageHandlerName]) {
+        return;
+    }
+    id body = ((id (*)(id, SEL))objc_msgSend)(message, bodySelector);
+    if (![body isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+    NSLog(@"[NativeVideoPlayer] page fullscreen message received: %@", body);
+    if ([self.delegate respondsToSelector:@selector(webView:didRequestFullscreenWithVideoInfo:)]) {
+        [self.delegate webView:self didRequestFullscreenWithVideoInfo:body];
+    } else {
+        // No one to handle it: expand in the page so the button still works.
+        [self stringByEvaluatingJavaScriptFromString:@"window.__browserApplyCssFullscreen && window.__browserApplyCssFullscreen();"];
     }
 }
 

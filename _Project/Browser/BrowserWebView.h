@@ -12,6 +12,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)webView:(id _Nonnull)webView didFailLoadWithError:(NSError * _Nonnull)error;
 // JavaScript panels (alert/confirm/prompt) ready to be presented by the host.
 - (void)webView:(id _Nonnull)webView requestsPresentingAlertController:(UIAlertController * _Nonnull)alertController;
+// The page requested video fullscreen (info keys: src, time, title).
+- (void)webView:(id _Nonnull)webView didRequestFullscreenWithVideoInfo:(NSDictionary * _Nonnull)videoInfo;
 
 @end
 

@@ -39,6 +39,38 @@ static BOOL const kBrowserYouTubeNativeExtractionEnabled = NO;
     return _youTubeExtractor;
 }
 
+// A page fullscreen button was pressed (routed by the fake-fullscreen user
+// script). Open our native player when the video exposes a directly playable
+// URL; otherwise tell the page to fall back to CSS fullscreen.
+- (void)handlePageFullscreenRequestWithInfo:(NSDictionary *)videoInfo {
+    NSString *src = [videoInfo[@"src"] isKindOfClass:[NSString class]] ? videoInfo[@"src"] : nil;
+    NSString *title = [videoInfo[@"title"] isKindOfClass:[NSString class]] ? videoInfo[@"title"] : nil;
+    NSTimeInterval currentTime = [videoInfo[@"time"] respondsToSelector:@selector(doubleValue)] ? [videoInfo[@"time"] doubleValue] : 0.0;
+
+    if (![self isNativePlayableVideoURLString:src]) {
+        // Blob/MSE source AVPlayer can't open: stay in the page, expanded via CSS.
+        NSLog(@"[NativeVideoPlayer] page fullscreen request without playable URL (src=%@), using CSS fallback", src ?: @"");
+        [self.host.browserWebView stringByEvaluatingJavaScriptFromString:@"window.__browserApplyCssFullscreen && window.__browserApplyCssFullscreen();"];
+        return;
+    }
+
+    NSURL *videoURL = [NSURL URLWithString:src];
+    if (currentTime >= 30.0 && videoURL.host.length > 0) {
+        // Seed the player's resume store so it continues from the page's position
+        // (same key format as BrowserNativeVideoPlayerViewController).
+        NSString *resumeKey = [NSString stringWithFormat:@"%@://%@%@", videoURL.scheme ?: @"", videoURL.host, videoURL.path ?: @""];
+        NSMutableDictionary *positions = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:@"VideoResumePositions"] mutableCopy] ?: [NSMutableDictionary dictionary];
+        positions[resumeKey] = @{ @"position": @(currentTime), @"date": @([NSDate date].timeIntervalSince1970) };
+        [[NSUserDefaults standardUserDefaults] setObject:positions forKey:@"VideoResumePositions"];
+    }
+
+    if (title.length == 0) {
+        title = self.host.browserCurrentPageTitle;
+    }
+    // Explicit user request: bypasses the Full Screen Player preference.
+    [self forcePresentNativeVideoPlayerForURL:videoURL title:title requestHeaders:nil cookies:nil];
+}
+
 - (void)playVideoUnderCursorIfAvailable {
     if (![self isFullscreenVideoPlaybackEnabled]) {
         return;
@@ -183,7 +215,15 @@ static BOOL const kBrowserYouTubeNativeExtractionEnabled = NO;
     if (![self isFullscreenVideoPlaybackEnabled]) {
         return;
     }
+    [self forcePresentNativeVideoPlayerForURL:URL title:title requestHeaders:requestHeaders cookies:cookies];
+}
 
+// Skips the Full Screen Player preference gate: used when the user explicitly
+// asked for fullscreen (e.g. the page's own fullscreen button).
+- (void)forcePresentNativeVideoPlayerForURL:(NSURL *)URL
+                                      title:(NSString *)title
+                             requestHeaders:(NSDictionary<NSString *, NSString *> *)requestHeaders
+                                    cookies:(NSArray<NSHTTPCookie *> *)cookies {
     if (URL == nil) {
         return;
     }
