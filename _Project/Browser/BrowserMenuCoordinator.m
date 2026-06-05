@@ -440,6 +440,14 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     [self.host browserPresentViewController:menuViewController];
 }
 
+- (void)showFavoritesMenu {
+    [self presentFavoritesMenu];
+}
+
+- (void)showHistoryMenu {
+    [self presentHistoryMenu];
+}
+
 - (UIAlertController *)browserAlertControllerWithTitle:(NSString *)title message:(NSString *)message {
     return [UIAlertController alertControllerWithTitle:title
                                                message:message

@@ -663,6 +663,22 @@ static UIColor *kTextColor(void) {
     [self browserHandlePrimaryAction];
 }
 
+- (void)browserRemoteInputControllerShowTabOverview {
+    [self browserShowTabOverview];
+}
+
+- (void)browserRemoteInputControllerShowHistory {
+    [self.menuCoordinator showHistoryMenu];
+}
+
+- (void)browserRemoteInputControllerShowFavorites {
+    [self.menuCoordinator showFavoritesMenu];
+}
+
+- (void)browserRemoteInputControllerOpenNewTab {
+    [self browserCreateNewTabLoadingHomePage:YES];
+}
+
 - (void)browserRemoteInputControllerHandleMenuPress {
     UIAlertController *alertController = (UIAlertController *)self.presentedViewController;
     if (alertController != nil) {

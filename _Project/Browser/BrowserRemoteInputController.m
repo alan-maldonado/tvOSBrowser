@@ -59,6 +59,10 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic) CFTimeInterval lastSelectPressTimestamp;
 @property (nonatomic) BOOL awaitingSecondSelectPress;
 @property (nonatomic) BOOL cursorShowingPointer;
+// Arrow buttons: single press scrolls the page, double press triggers shortcuts
+// (up=tabs, left=history, down=favorites, right=new tab).
+@property (nonatomic) UIPressType lastArrowPressType;
+@property (nonatomic) CFTimeInterval lastArrowPressTimestamp;
 
 @end
 
@@ -117,6 +121,10 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 }
 
 - (BOOL)applyManualScrollDelta:(CGPoint)delta {
+    return [self applyManualScrollDelta:delta animated:NO];
+}
+
+- (BOOL)applyManualScrollDelta:(CGPoint)delta animated:(BOOL)animated {
     UIScrollView *scrollView = [self.host browserRemoteInputControllerActiveScrollView];
     if (scrollView == nil) {
         return NO;
@@ -128,7 +136,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     CGFloat nextOffsetX = MIN(MAX(contentOffset.x + delta.x, 0.0), maxOffsetX);
     CGFloat nextOffsetY = MIN(MAX(contentOffset.y + delta.y, 0.0), maxOffsetY);
     CGPoint nextOffset = CGPointMake(nextOffsetX, nextOffsetY);
-    [scrollView setContentOffset:nextOffset animated:NO];
+    [scrollView setContentOffset:nextOffset animated:animated];
     return !CGPointEqualToPoint(contentOffset, nextOffset);
 }
 
@@ -351,12 +359,6 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         return YES;
     }
 
-    if (press.type == UIPressTypeUpArrow &&
-        [self.host browserRemoteInputControllerCanActivateTopBarFocus]) {
-        [self.host browserRemoteInputControllerActivateTopBarFocus];
-        return YES;
-    }
-
     if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
         if (press.type == UIPressTypeMenu || press.type == UIPressTypePlayPause) {
             [self.host browserRemoteInputControllerDismissTabOverview];
@@ -366,6 +368,72 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
             [self.host browserRemoteInputControllerHandleTabOverviewSelectionAtPoint:self.cursorView.frame.origin];
             return YES;
         }
+    }
+
+    BOOL isArrowPress = (press.type == UIPressTypeUpArrow || press.type == UIPressTypeDownArrow ||
+                         press.type == UIPressTypeLeftArrow || press.type == UIPressTypeRightArrow);
+    // No scroll/shortcuts with ANY modal up (incl. alerts like Favorites/History,
+    // which the earlier presented-VC block deliberately lets through): the arrows
+    // must keep driving focus inside the modal.
+    if (isArrowPress && presentedViewController == nil &&
+        ![self.host browserRemoteInputControllerTabOverviewVisible]) {
+        CFTimeInterval now = CACurrentMediaTime();
+        BOOL isDoublePress = (self.lastArrowPressType == press.type) &&
+                             ((now - self.lastArrowPressTimestamp) <= 0.45);
+        self.lastArrowPressType = press.type;
+        self.lastArrowPressTimestamp = now;
+
+        if (isDoublePress) {
+            self.lastArrowPressType = (UIPressType)-1;
+            self.lastArrowPressTimestamp = 0;
+            switch (press.type) {
+                case UIPressTypeUpArrow:
+                    [self.host browserRemoteInputControllerShowTabOverview];
+                    break;
+                case UIPressTypeLeftArrow:
+                    [self.host browserRemoteInputControllerShowHistory];
+                    break;
+                case UIPressTypeDownArrow:
+                    [self.host browserRemoteInputControllerShowFavorites];
+                    break;
+                case UIPressTypeRightArrow:
+                    [self.host browserRemoteInputControllerOpenNewTab];
+                    break;
+                default:
+                    break;
+            }
+            return YES;
+        }
+
+        // Single press: scroll the page by half a viewport.
+        [self stopManualScrollInertia];
+        UIScrollView *scrollView = [self.host browserRemoteInputControllerActiveScrollView];
+        CGFloat verticalStep = scrollView != nil ? CGRectGetHeight(scrollView.bounds) * 0.5 : 400.0;
+        CGFloat horizontalStep = scrollView != nil ? CGRectGetWidth(scrollView.bounds) * 0.5 : 400.0;
+        switch (press.type) {
+            case UIPressTypeUpArrow: {
+                BOOL atTop = scrollView == nil || scrollView.contentOffset.y <= 0.0;
+                if (atTop && [self.host browserRemoteInputControllerCanActivateTopBarFocus]) {
+                    // Already at the top: move focus up into the top bar (previous behavior).
+                    [self.host browserRemoteInputControllerActivateTopBarFocus];
+                } else {
+                    [self applyManualScrollDelta:CGPointMake(0.0, -verticalStep) animated:YES];
+                }
+                break;
+            }
+            case UIPressTypeDownArrow:
+                [self applyManualScrollDelta:CGPointMake(0.0, verticalStep) animated:YES];
+                break;
+            case UIPressTypeLeftArrow:
+                [self applyManualScrollDelta:CGPointMake(-horizontalStep, 0.0) animated:YES];
+                break;
+            case UIPressTypeRightArrow:
+                [self applyManualScrollDelta:CGPointMake(horizontalStep, 0.0) animated:YES];
+                break;
+            default:
+                break;
+        }
+        return YES;
     }
 
     if (press.type == UIPressTypeMenu) {

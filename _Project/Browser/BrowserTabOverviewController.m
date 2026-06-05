@@ -240,6 +240,11 @@ static CGFloat const kTabCardURLHeight = 64.0;
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.clearColor;
 
+    UISwipeGestureRecognizer *closeTabSwipeRecognizer = [[UISwipeGestureRecognizer alloc] initWithTarget:self
+                                                                                                  action:@selector(handleCloseTabSwipe:)];
+    closeTabSwipeRecognizer.direction = UISwipeGestureRecognizerDirectionUp;
+    [self.view addGestureRecognizer:closeTabSwipeRecognizer];
+
     UIView *dimView = [UIView new];
     dimView.translatesAutoresizingMaskIntoConstraints = NO;
     dimView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.45];
@@ -425,6 +430,13 @@ static CGFloat const kTabCardURLHeight = 64.0;
 
 - (NSArray<id<UIFocusEnvironment>> *)preferredFocusEnvironments {
     return @[self.collectionView];
+}
+
+- (void)handleCloseTabSwipe:(UISwipeGestureRecognizer *)recognizer {
+    // Swipe up on a focused tab card closes that tab (app-switcher style).
+    if (recognizer.state == UIGestureRecognizerStateRecognized) {
+        [self handleAlternateAction];
+    }
 }
 
 - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {

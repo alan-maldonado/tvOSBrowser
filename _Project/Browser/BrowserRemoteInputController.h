@@ -17,6 +17,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)browserRemoteInputControllerDismissTabOverview;
 - (void)browserRemoteInputControllerHandleTabOverviewAlternateAction;
 - (void)browserRemoteInputControllerHandlePrimaryAction;
+- (void)browserRemoteInputControllerShowTabOverview;
+- (void)browserRemoteInputControllerShowHistory;
+- (void)browserRemoteInputControllerShowFavorites;
+- (void)browserRemoteInputControllerOpenNewTab;
 - (void)browserRemoteInputControllerHandleMenuPress;
 - (void)browserRemoteInputControllerHandlePlayPausePress;
 - (void)browserRemoteInputControllerHandleAdvancedMenuPress;
