@@ -46,6 +46,9 @@ static UIColor *kTextColor(void) {
 @property (nonatomic) BOOL displayedHintsOnLaunch;
 @property (nonatomic) BOOL scrollViewAllowBounces;
 @property (nonatomic, getter=isTopBarFocusActive) BOOL topBarFocusActive;
+// Double-back-to-exit: timestamp of the last Menu press at the root of history.
+@property (nonatomic) CFAbsoluteTime lastExitBackPressTimestamp;
+@property (nonatomic) UILabel *exitHintLabel;
 
 @end
 
@@ -667,17 +670,65 @@ static UIColor *kTextColor(void) {
     } else if (self.webview.canGoBack) {
         [self.webview goBack];
     } else {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Exit App?"
-                                                                       message:nil
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Exit"
-                                                  style:UIAlertActionStyleDestructive
-                                                handler:^(__unused UIAlertAction *action) {
+        // No history left: require a second Back press within 2s to exit.
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        if (now - self.lastExitBackPressTimestamp <= 2.0) {
             exit(EXIT_SUCCESS);
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Dismiss" style:UIAlertActionStyleCancel handler:nil]];
-        [self presentViewController:alert animated:YES completion:nil];
+        }
+        self.lastExitBackPressTimestamp = now;
+        [self showExitHintToast];
     }
+}
+
+- (void)showExitHintToast {
+    if (self.exitHintLabel == nil) {
+        UILabel *label = [[UILabel alloc] init];
+        label.font = [UIFont systemFontOfSize:29.0 weight:UIFontWeightSemibold];
+        label.textColor = UIColor.whiteColor;
+        label.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.75];
+        label.textAlignment = NSTextAlignmentCenter;
+        label.layer.cornerRadius = 10.0;
+        label.layer.masksToBounds = YES;
+        label.text = @"Press Back again to exit";
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.view addSubview:label];
+        [NSLayoutConstraint activateConstraints:@[
+            [label.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+            [label.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor constant:-60.0],
+            [label.widthAnchor constraintEqualToConstant:520.0],
+            [label.heightAnchor constraintEqualToConstant:64.0],
+        ]];
+        self.exitHintLabel = label;
+    }
+    [self.view bringSubviewToFront:self.exitHintLabel];
+    self.exitHintLabel.alpha = 1.0;
+    self.exitHintLabel.hidden = NO;
+    [UIView animateWithDuration:0.3
+                          delay:1.7
+                        options:UIViewAnimationOptionBeginFromCurrentState
+                     animations:^{
+        self.exitHintLabel.alpha = 0.0;
+    }
+                     completion:^(BOOL finished) {
+        if (finished) {
+            self.exitHintLabel.hidden = YES;
+        }
+    }];
+}
+
+- (void)browserHandleGlobalMenuPress {
+    // Single deterministic entry point for Menu when nothing is presented
+    // (called from the UIApplication sendEvent: interception so the press can
+    // never fall through to the system and suspend the app).
+    if (self.isTopBarFocusActive) {
+        [self browserRemoteInputControllerDeactivateTopBarFocus];
+        return;
+    }
+    if ([self browserRemoteInputControllerTabOverviewVisible]) {
+        [self browserRemoteInputControllerDismissTabOverview];
+        return;
+    }
+    [self browserRemoteInputControllerHandleMenuPress];
 }
 
 - (void)browserRemoteInputControllerHandlePlayPausePress {

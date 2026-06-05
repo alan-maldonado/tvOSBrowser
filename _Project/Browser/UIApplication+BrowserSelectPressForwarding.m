@@ -227,6 +227,30 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
             }
         }
 
+        if (press.type == UIPressTypeMenu) {
+            // Safety net: in plain browsing state (nothing presented) Menu must NEVER
+            // fall through to the system, which would suspend the app without warning.
+            // Route it to the browser's back / double-back-to-exit handling instead.
+            UIViewController *browserRootViewController = nil;
+            SEL globalMenuSelector = NSSelectorFromString(@"browserHandleGlobalMenuPress");
+            for (UIWindow *window in self.windows) {
+                if (!window.hidden && [window.rootViewController respondsToSelector:globalMenuSelector]) {
+                    browserRootViewController = window.rootViewController;
+                    break;
+                }
+            }
+            if (browserRootViewController != nil && browserRootViewController.presentedViewController == nil) {
+                if (press.phase == UIPressPhaseEnded) {
+                    NSLog(@"[InputTrace][App] swallow Menu globally (browser back/exit)");
+                    UIViewController *targetViewController = browserRootViewController;
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        ((void (*)(id, SEL))objc_msgSend)(targetViewController, globalMenuSelector);
+                    });
+                }
+                return; // swallow every phase
+            }
+        }
+
         if ((press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) && press.phase == UIPressPhaseEnded) {
             if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
                 SEL togglePlaybackSelector = NSSelectorFromString(@"togglePlayback");
