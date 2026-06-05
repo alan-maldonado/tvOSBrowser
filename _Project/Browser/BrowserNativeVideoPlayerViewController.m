@@ -1,5 +1,6 @@
 #import "BrowserNativeVideoPlayerViewController.h"
 #import "BrowserNativeVideoAssetLoader.h"
+#import "BrowserPreferencesStore.h"
 
 #import <AVFoundation/AVFoundation.h>
 
@@ -52,12 +53,14 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
 @property (nonatomic, assign) NSTimeInterval pendingSeekTarget;
 @property (nonatomic, assign) BOOL hasPendingSeek;
 
-// Position HUD shown while scrubbing/scanning (AVKit's timeline stays hidden
-// because we swallow the touches it would react to).
+// Our transport bar (AVKit's controls are disabled): progress + elapsed/remaining.
+// Persistent while paused, auto-hides shortly after activity while playing.
 @property (nonatomic, strong) UIView *positionHUDView;
 @property (nonatomic, strong) UILabel *positionHUDLabel;
+@property (nonatomic, strong) UILabel *positionHUDRemainingLabel;
 @property (nonatomic, strong) UIProgressView *positionHUDProgress;
 @property (nonatomic, strong) NSTimer *positionHUDHideTimer;
+@property (nonatomic, strong) id periodicTimeObserver;
 
 @end
 
@@ -94,7 +97,9 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
     [super viewDidLoad];
 
     self.view.backgroundColor = UIColor.blackColor;
-    self.showsPlaybackControls = YES;
+    // All transport input and UI is ours (FF scanning, scrub, skips, toggle, HUD);
+    // AVKit's overlay would just be a second, out-of-sync progress bar.
+    self.showsPlaybackControls = NO;
     AVPlayerItem *playerItem = nil;
     if (self.requestHeaders.count > 0 || self.requestCookies.count > 0) {
         NSMutableDictionary *assetOptions = [NSMutableDictionary dictionary];
@@ -119,6 +124,21 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
     }
     self.player = [AVPlayer playerWithPlayerItem:playerItem];
     [self log:@"created player url=%@", self.videoURL.absoluteString ?: @""];
+
+    __weak typeof(self) weakSelf = self;
+    self.periodicTimeObserver = [self.player addPeriodicTimeObserverForInterval:CMTimeMakeWithSeconds(0.5, NSEC_PER_SEC)
+                                                                           queue:dispatch_get_main_queue()
+                                                                      usingBlock:^(CMTime time) {
+        typeof(self) strongSelf = weakSelf;
+        if (strongSelf == nil || strongSelf.positionHUDView == nil || strongSelf.positionHUDView.hidden) {
+            return;
+        }
+        // Seeks/scanning drive the HUD with their own (virtual) target.
+        if (strongSelf.hasPendingSeek || [strongSelf isScanning]) {
+            return;
+        }
+        [strongSelf updatePositionHUDWithTime:CMTimeGetSeconds(time)];
+    }];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handlePlayerItemFailedToPlayToEndTime:)
@@ -160,6 +180,10 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
 }
 
 - (void)dealloc {
+    if (self.periodicTimeObserver != nil) {
+        [self.player removeTimeObserver:self.periodicTimeObserver];
+    }
+    [self.positionHUDHideTimer invalidate];
     @try {
         [self.player.currentItem removeObserver:self forKeyPath:@"status"];
     } @catch (__unused NSException *exception) {}
@@ -179,9 +203,13 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
     if (self.player.rate > 0.0) {
         [self log:@"toggle pause"];
         [self.player pause];
+        // Transport bar stays visible (persistent) while paused.
+        NSTimeInterval position = self.hasPendingSeek ? self.pendingSeekTarget : CMTimeGetSeconds(self.player.currentTime);
+        [self showPositionHUDForTarget:position];
     } else {
         [self log:@"toggle play"];
         [self.player play];
+        [self schedulePositionHUDHide];
     }
 }
 
@@ -399,53 +427,78 @@ static NSString *BrowserNativePlayerFormatTime(NSTimeInterval time) {
 - (void)showPositionHUDForTarget:(NSTimeInterval)target {
     if (self.positionHUDView == nil) {
         UIView *hud = [[UIView alloc] init];
-        hud.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.6];
-        hud.layer.cornerRadius = 10.0;
-        hud.layer.masksToBounds = YES;
         hud.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentOverlayView addSubview:hud];
 
-        UILabel *label = [[UILabel alloc] init];
-        label.font = [UIFont monospacedDigitSystemFontOfSize:29.0 weight:UIFontWeightSemibold];
-        label.textColor = UIColor.whiteColor;
-        label.textAlignment = NSTextAlignmentCenter;
-        label.translatesAutoresizingMaskIntoConstraints = NO;
-        [hud addSubview:label];
-
         UIProgressView *progress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
         progress.progressTintColor = UIColor.whiteColor;
-        progress.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.3];
+        progress.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.25];
+        progress.transform = CGAffineTransformMakeScale(1.0, 3.0);
         progress.translatesAutoresizingMaskIntoConstraints = NO;
         [hud addSubview:progress];
 
+        UILabel *elapsed = [[UILabel alloc] init];
+        elapsed.font = [UIFont monospacedDigitSystemFontOfSize:27.0 weight:UIFontWeightSemibold];
+        elapsed.textColor = UIColor.whiteColor;
+        elapsed.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.8];
+        elapsed.shadowOffset = CGSizeMake(0.0, 1.0);
+        elapsed.translatesAutoresizingMaskIntoConstraints = NO;
+        [hud addSubview:elapsed];
+
+        UILabel *remaining = [[UILabel alloc] init];
+        remaining.font = [UIFont monospacedDigitSystemFontOfSize:27.0 weight:UIFontWeightSemibold];
+        remaining.textColor = UIColor.whiteColor;
+        remaining.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.8];
+        remaining.shadowOffset = CGSizeMake(0.0, 1.0);
+        remaining.textAlignment = NSTextAlignmentRight;
+        remaining.translatesAutoresizingMaskIntoConstraints = NO;
+        [hud addSubview:remaining];
+
         [NSLayoutConstraint activateConstraints:@[
-            [hud.centerXAnchor constraintEqualToAnchor:self.contentOverlayView.centerXAnchor],
-            [hud.bottomAnchor constraintEqualToAnchor:self.contentOverlayView.bottomAnchor constant:-80.0],
-            [label.topAnchor constraintEqualToAnchor:hud.topAnchor constant:16.0],
-            [label.centerXAnchor constraintEqualToAnchor:hud.centerXAnchor],
-            [progress.topAnchor constraintEqualToAnchor:label.bottomAnchor constant:14.0],
-            [progress.leadingAnchor constraintEqualToAnchor:hud.leadingAnchor constant:28.0],
-            [progress.trailingAnchor constraintEqualToAnchor:hud.trailingAnchor constant:-28.0],
-            [progress.bottomAnchor constraintEqualToAnchor:hud.bottomAnchor constant:-20.0],
-            [progress.widthAnchor constraintEqualToConstant:760.0],
+            [hud.leadingAnchor constraintEqualToAnchor:self.contentOverlayView.leadingAnchor constant:90.0],
+            [hud.trailingAnchor constraintEqualToAnchor:self.contentOverlayView.trailingAnchor constant:-90.0],
+            [hud.bottomAnchor constraintEqualToAnchor:self.contentOverlayView.bottomAnchor constant:-60.0],
+            [progress.topAnchor constraintEqualToAnchor:hud.topAnchor],
+            [progress.leadingAnchor constraintEqualToAnchor:hud.leadingAnchor],
+            [progress.trailingAnchor constraintEqualToAnchor:hud.trailingAnchor],
+            [elapsed.topAnchor constraintEqualToAnchor:progress.bottomAnchor constant:18.0],
+            [elapsed.leadingAnchor constraintEqualToAnchor:hud.leadingAnchor],
+            [elapsed.bottomAnchor constraintEqualToAnchor:hud.bottomAnchor],
+            [remaining.topAnchor constraintEqualToAnchor:progress.bottomAnchor constant:18.0],
+            [remaining.trailingAnchor constraintEqualToAnchor:hud.trailingAnchor],
         ]];
 
         self.positionHUDView = hud;
-        self.positionHUDLabel = label;
+        self.positionHUDLabel = elapsed;
+        self.positionHUDRemainingLabel = remaining;
         self.positionHUDProgress = progress;
     }
 
-    NSTimeInterval duration = CMTimeGetSeconds(self.player.currentItem.duration);
-    BOOL hasDuration = isfinite(duration) && duration > 0.0;
-    self.positionHUDLabel.text = [NSString stringWithFormat:@"%@ / %@",
-                                  BrowserNativePlayerFormatTime(target),
-                                  hasDuration ? BrowserNativePlayerFormatTime(duration) : @"--:--"];
-    self.positionHUDProgress.hidden = !hasDuration;
-    if (hasDuration) {
-        self.positionHUDProgress.progress = (float)(target / duration);
-    }
+    [self updatePositionHUDWithTime:target];
     self.positionHUDView.hidden = NO;
 
+    [self.positionHUDHideTimer invalidate];
+    self.positionHUDHideTimer = nil;
+    if (![self isEffectivelyPaused]) {
+        [self schedulePositionHUDHide];
+    }
+}
+
+- (void)updatePositionHUDWithTime:(NSTimeInterval)time {
+    NSTimeInterval duration = CMTimeGetSeconds(self.player.currentItem.duration);
+    BOOL hasDuration = isfinite(duration) && duration > 0.0;
+    self.positionHUDLabel.text = BrowserNativePlayerFormatTime(time);
+    if (!hasDuration) {
+        self.positionHUDRemainingLabel.text = @"";
+    } else if ([[BrowserPreferencesStore new] videoHUDShowsTotalDuration]) {
+        self.positionHUDRemainingLabel.text = BrowserNativePlayerFormatTime(duration);
+    } else {
+        self.positionHUDRemainingLabel.text = [NSString stringWithFormat:@"-%@", BrowserNativePlayerFormatTime(MAX(duration - time, 0.0))];
+    }
+    self.positionHUDProgress.progress = hasDuration ? (float)(time / duration) : 0.0f;
+}
+
+- (void)schedulePositionHUDHide {
     [self.positionHUDHideTimer invalidate];
     __weak typeof(self) weakSelf = self;
     self.positionHUDHideTimer = [NSTimer scheduledTimerWithTimeInterval:1.5 repeats:NO block:^(__unused NSTimer *timer) {

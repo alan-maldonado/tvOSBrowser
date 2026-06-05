@@ -229,32 +229,20 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
 
         if ((press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) && press.phase == UIPressPhaseEnded) {
             if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
-                // While paused, forward to AVPlayerViewController so its paused-scrubbing
-                // preview gets committed and playback resumes from the scrubbed position.
-                if (BrowserNativePlayerIsEffectivelyPaused(nativeVideoPlayerViewController)) {
-                    NSLog(@"[InputTrace][App] forward %@ to native player (paused, native scrub commit)",
+                SEL togglePlaybackSelector = NSSelectorFromString(@"togglePlayback");
+                if ([nativeVideoPlayerViewController respondsToSelector:togglePlaybackSelector]) {
+                    NSLog(@"[InputTrace][App] swallow %@ for native player",
                           BrowserPressTypeString(press.type));
-                } else {
-                    SEL togglePlaybackSelector = NSSelectorFromString(@"togglePlayback");
-                    if ([nativeVideoPlayerViewController respondsToSelector:togglePlaybackSelector]) {
-                        NSLog(@"[InputTrace][App] swallow %@ for native player",
-                              BrowserPressTypeString(press.type));
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            ((void (*)(id, SEL))objc_msgSend)(nativeVideoPlayerViewController, togglePlaybackSelector);
-                        });
-                        return;
-                    }
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        ((void (*)(id, SEL))objc_msgSend)(nativeVideoPlayerViewController, togglePlaybackSelector);
+                    });
+                    return;
                 }
             }
         }
 
         if (press.type == UIPressTypeLeftArrow || press.type == UIPressTypeRightArrow) {
             if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
-                // While paused, let AVPlayerViewController handle arrows natively (they move
-                // the paused-scrubbing preview, committed on play).
-                if (BrowserNativePlayerIsEffectivelyPaused(nativeVideoPlayerViewController)) {
-                    continue;
-                }
                 // Swallow EVERY phase: if Began leaks through to AVPlayerViewController without
                 // a matching Ended, it thinks the arrow is held down and starts its internal
                 // scanning (runaway x2/x3 fast-forward that can't be cancelled).

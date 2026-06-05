@@ -994,6 +994,16 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     }];
 }
 
+- (BrowserAdvancedMenuItem *)videoHUDTimeDisplayToggleMenuItem {
+    BOOL showsTotal = [[BrowserPreferencesStore new] videoHUDShowsTotalDuration];
+    NSString *title = showsTotal ? @"Player Time: Total Duration" : @"Player Time: Remaining";
+    return [self advancedMenuItemWithTitle:title
+                                     style:UIAlertActionStyleDefault
+                                   handler:^{
+        [[BrowserPreferencesStore new] setVideoHUDShowsTotalDuration:!showsTotal];
+    }];
+}
+
 - (NSArray<BrowserAdvancedMenuSection *> *)advancedMenuSections {
     BrowserAdvancedMenuItem *increaseFontSizeItem = [self advancedMenuItemWithTitle:@"Increase Font Size"
                                                                                style:UIAlertActionStyleDefault
@@ -1055,6 +1065,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
         [BrowserAdvancedMenuSection sectionWithTitle:@"Video Playback"
                                                items:@[
             [self fullscreenVideoPlaybackToggleMenuItem],
+            [self videoHUDTimeDisplayToggleMenuItem],
         ]],
         [BrowserAdvancedMenuSection sectionWithTitle:@"Compatibility"
                                                items:@[
