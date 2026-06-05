@@ -710,6 +710,14 @@ static UIColor *kTextColor(void) {
         // No history left: require a second Back press within 2s to exit.
         CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
         if (now - self.lastExitBackPressTimestamp <= 2.0) {
+            // exit() skips the app lifecycle callbacks (resignActive/background/
+            // terminate), so persist the session and cookies here or they'd be lost.
+            [self.tabCoordinator persistSession];
+            NSData *cookieData = [BrowserWebView cookieDataRepresentation];
+            if (cookieData != nil) {
+                [[NSUserDefaults standardUserDefaults] setObject:cookieData forKey:@"ApplicationCookie"];
+            }
+            [[NSUserDefaults standardUserDefaults] synchronize];
             exit(EXIT_SUCCESS);
         }
         self.lastExitBackPressTimestamp = now;

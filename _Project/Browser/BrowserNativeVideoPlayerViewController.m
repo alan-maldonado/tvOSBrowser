@@ -6,6 +6,10 @@
 
 static NSString * const kBrowserNativeVideoPlayerLogPrefix = @"[NativeVideoPlayer]";
 static NSString * const kBrowserNativePlayerInputLogPrefix = @"[InputTrace][NativePlayer]";
+static NSString * const kBrowserVideoResumePositionsDefaultsKey = @"VideoResumePositions";
+static NSUInteger const kBrowserVideoResumeMaxEntries = 50;
+// No resume near the start (not worth it) or near the end (counts as watched).
+static NSTimeInterval const kBrowserVideoResumeEdgeMargin = 30.0;
 
 static NSString *BrowserNativePlayerPressTypeString(UIPressType type) {
     switch (type) {
@@ -56,11 +60,17 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
 // Our transport bar (AVKit's controls are disabled): progress + elapsed/remaining.
 // Persistent while paused, auto-hides shortly after activity while playing.
 @property (nonatomic, strong) UIView *positionHUDView;
+@property (nonatomic, strong) UILabel *positionHUDTitleLabel;
 @property (nonatomic, strong) UILabel *positionHUDLabel;
 @property (nonatomic, strong) UILabel *positionHUDRemainingLabel;
+@property (nonatomic, strong) UIProgressView *positionHUDBufferProgress;
 @property (nonatomic, strong) UIProgressView *positionHUDProgress;
 @property (nonatomic, strong) NSTimer *positionHUDHideTimer;
 @property (nonatomic, strong) id periodicTimeObserver;
+
+// Resume-where-you-left-off support.
+@property (nonatomic, assign) BOOL didAttemptResume;
+@property (nonatomic, assign) NSTimeInterval lastResumeSaveTimestamp;
 
 @end
 
@@ -130,7 +140,17 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
                                                                            queue:dispatch_get_main_queue()
                                                                       usingBlock:^(CMTime time) {
         typeof(self) strongSelf = weakSelf;
-        if (strongSelf == nil || strongSelf.positionHUDView == nil || strongSelf.positionHUDView.hidden) {
+        if (strongSelf == nil) {
+            return;
+        }
+        // Periodically checkpoint the position so resume works even if the app
+        // is killed mid-playback.
+        NSTimeInterval uptime = [NSDate timeIntervalSinceReferenceDate];
+        if (strongSelf.player.rate > 0.0 && (uptime - strongSelf.lastResumeSaveTimestamp) > 10.0) {
+            strongSelf.lastResumeSaveTimestamp = uptime;
+            [strongSelf saveResumePosition];
+        }
+        if (strongSelf.positionHUDView == nil || strongSelf.positionHUDView.hidden) {
             return;
         }
         // Seeks/scanning drive the HUD with their own (virtual) target.
@@ -140,6 +160,10 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
         [strongSelf updatePositionHUDWithTime:CMTimeGetSeconds(time)];
     }];
 
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handlePlayerItemDidPlayToEndTime:)
+                                                 name:AVPlayerItemDidPlayToEndTimeNotification
+                                               object:self.player.currentItem];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handlePlayerItemFailedToPlayToEndTime:)
                                                  name:AVPlayerItemFailedToPlayToEndTimeNotification
@@ -174,6 +198,7 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
     [super viewWillDisappear:animated];
     NSLog(@"%@ viewWillDisappear", kBrowserNativePlayerInputLogPrefix);
     [self log:@"viewWillDisappear pause"];
+    [self saveResumePosition];
     [self stopScanTimer];
     self.scanRate = 1.0f;
     [self.player pause];
@@ -183,6 +208,7 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
     if (self.periodicTimeObserver != nil) {
         [self.player removeTimeObserver:self.periodicTimeObserver];
     }
+    [self.scanTimer invalidate];
     [self.positionHUDHideTimer invalidate];
     @try {
         [self.player.currentItem removeObserver:self forKeyPath:@"status"];
@@ -430,9 +456,28 @@ static NSString *BrowserNativePlayerFormatTime(NSTimeInterval time) {
         hud.translatesAutoresizingMaskIntoConstraints = NO;
         [self.contentOverlayView addSubview:hud];
 
+        UILabel *title = [[UILabel alloc] init];
+        title.font = [UIFont systemFontOfSize:30.0 weight:UIFontWeightSemibold];
+        title.textColor = UIColor.whiteColor;
+        title.shadowColor = [UIColor colorWithWhite:0.0 alpha:0.8];
+        title.shadowOffset = CGSizeMake(0.0, 1.0);
+        title.lineBreakMode = NSLineBreakByTruncatingTail;
+        title.text = self.videoTitle;
+        title.translatesAutoresizingMaskIntoConstraints = NO;
+        [hud addSubview:title];
+
+        // Buffer bar drawn under the playback progress: its own track is the visible
+        // track; the bar on top has a clear track so the buffered range shows through.
+        UIProgressView *buffer = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+        buffer.progressTintColor = [UIColor colorWithWhite:1.0 alpha:0.45];
+        buffer.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.25];
+        buffer.transform = CGAffineTransformMakeScale(1.0, 3.0);
+        buffer.translatesAutoresizingMaskIntoConstraints = NO;
+        [hud addSubview:buffer];
+
         UIProgressView *progress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
         progress.progressTintColor = UIColor.whiteColor;
-        progress.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.25];
+        progress.trackTintColor = UIColor.clearColor;
         progress.transform = CGAffineTransformMakeScale(1.0, 3.0);
         progress.translatesAutoresizingMaskIntoConstraints = NO;
         [hud addSubview:progress];
@@ -458,19 +503,27 @@ static NSString *BrowserNativePlayerFormatTime(NSTimeInterval time) {
             [hud.leadingAnchor constraintEqualToAnchor:self.contentOverlayView.leadingAnchor constant:90.0],
             [hud.trailingAnchor constraintEqualToAnchor:self.contentOverlayView.trailingAnchor constant:-90.0],
             [hud.bottomAnchor constraintEqualToAnchor:self.contentOverlayView.bottomAnchor constant:-60.0],
-            [progress.topAnchor constraintEqualToAnchor:hud.topAnchor],
+            [title.topAnchor constraintEqualToAnchor:hud.topAnchor],
+            [title.leadingAnchor constraintEqualToAnchor:hud.leadingAnchor],
+            [title.trailingAnchor constraintLessThanOrEqualToAnchor:hud.trailingAnchor],
+            [buffer.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:18.0],
+            [buffer.leadingAnchor constraintEqualToAnchor:hud.leadingAnchor],
+            [buffer.trailingAnchor constraintEqualToAnchor:hud.trailingAnchor],
+            [progress.centerYAnchor constraintEqualToAnchor:buffer.centerYAnchor],
             [progress.leadingAnchor constraintEqualToAnchor:hud.leadingAnchor],
             [progress.trailingAnchor constraintEqualToAnchor:hud.trailingAnchor],
-            [elapsed.topAnchor constraintEqualToAnchor:progress.bottomAnchor constant:18.0],
+            [elapsed.topAnchor constraintEqualToAnchor:buffer.bottomAnchor constant:18.0],
             [elapsed.leadingAnchor constraintEqualToAnchor:hud.leadingAnchor],
             [elapsed.bottomAnchor constraintEqualToAnchor:hud.bottomAnchor],
-            [remaining.topAnchor constraintEqualToAnchor:progress.bottomAnchor constant:18.0],
+            [remaining.topAnchor constraintEqualToAnchor:buffer.bottomAnchor constant:18.0],
             [remaining.trailingAnchor constraintEqualToAnchor:hud.trailingAnchor],
         ]];
 
         self.positionHUDView = hud;
+        self.positionHUDTitleLabel = title;
         self.positionHUDLabel = elapsed;
         self.positionHUDRemainingLabel = remaining;
+        self.positionHUDBufferProgress = buffer;
         self.positionHUDProgress = progress;
     }
 
@@ -496,6 +549,18 @@ static NSString *BrowserNativePlayerFormatTime(NSTimeInterval time) {
         self.positionHUDRemainingLabel.text = [NSString stringWithFormat:@"-%@", BrowserNativePlayerFormatTime(MAX(duration - time, 0.0))];
     }
     self.positionHUDProgress.progress = hasDuration ? (float)(time / duration) : 0.0f;
+
+    // Buffered range relevant to the current position (shows how far ahead is loaded).
+    NSTimeInterval bufferedEnd = 0.0;
+    for (NSValue *value in self.player.currentItem.loadedTimeRanges) {
+        CMTimeRange range = value.CMTimeRangeValue;
+        NSTimeInterval start = CMTimeGetSeconds(range.start);
+        NSTimeInterval end = start + CMTimeGetSeconds(range.duration);
+        if (start <= time + 1.0 && end > bufferedEnd) {
+            bufferedEnd = end;
+        }
+    }
+    self.positionHUDBufferProgress.progress = hasDuration ? (float)(MIN(bufferedEnd, duration) / duration) : 0.0f;
 }
 
 - (void)schedulePositionHUDHide {
@@ -511,6 +576,105 @@ static NSString *BrowserNativePlayerFormatTime(NSTimeInterval time) {
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+#pragma mark - Resume position
+
+- (NSString *)resumeStorageKey {
+    NSURL *url = self.videoURL;
+    if (url == nil || url.host.length == 0) {
+        return nil;
+    }
+    // Key by scheme+host+path only: signed query tokens change between visits
+    // (e.g. extracted/CDN URLs) but the path identifies the same video.
+    return [NSString stringWithFormat:@"%@://%@%@", url.scheme ?: @"", url.host, url.path ?: @""];
+}
+
+- (void)saveResumePosition {
+    NSString *key = [self resumeStorageKey];
+    if (key == nil || self.player.currentItem == nil) {
+        return;
+    }
+    NSTimeInterval position = self.hasPendingSeek ? self.pendingSeekTarget : CMTimeGetSeconds(self.player.currentTime);
+    if ([self isScanning]) {
+        position = self.scanTargetTime;
+    }
+    NSTimeInterval duration = CMTimeGetSeconds(self.player.currentItem.duration);
+    BOOL nearStart = !isfinite(position) || position < kBrowserVideoResumeEdgeMargin;
+    BOOL nearEnd = isfinite(duration) && duration > 0.0 && position > duration - kBrowserVideoResumeEdgeMargin;
+    if (nearStart || nearEnd) {
+        [self clearResumePosition];
+        return;
+    }
+
+    NSMutableDictionary *positions = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:kBrowserVideoResumePositionsDefaultsKey] mutableCopy] ?: [NSMutableDictionary dictionary];
+    positions[key] = @{ @"position": @(position), @"date": @([NSDate date].timeIntervalSince1970) };
+
+    // Keep the store bounded: drop the oldest entries beyond the cap.
+    if (positions.count > kBrowserVideoResumeMaxEntries) {
+        NSArray *sortedKeys = [positions keysSortedByValueUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+            return [(a[@"date"] ?: @0) compare:(b[@"date"] ?: @0)];
+        }];
+        NSUInteger overflow = positions.count - kBrowserVideoResumeMaxEntries;
+        for (NSUInteger index = 0; index < overflow; index++) {
+            [positions removeObjectForKey:sortedKeys[index]];
+        }
+    }
+
+    [[NSUserDefaults standardUserDefaults] setObject:positions forKey:kBrowserVideoResumePositionsDefaultsKey];
+    [self log:@"saved resume position=%0.1f key=%@", position, key];
+}
+
+- (void)clearResumePosition {
+    NSString *key = [self resumeStorageKey];
+    if (key == nil) {
+        return;
+    }
+    NSMutableDictionary *positions = [[[NSUserDefaults standardUserDefaults] dictionaryForKey:kBrowserVideoResumePositionsDefaultsKey] mutableCopy];
+    if (positions[key] == nil) {
+        return;
+    }
+    [positions removeObjectForKey:key];
+    [[NSUserDefaults standardUserDefaults] setObject:positions forKey:kBrowserVideoResumePositionsDefaultsKey];
+    [self log:@"cleared resume position key=%@", key];
+}
+
+- (void)restoreResumePositionIfAvailable {
+    if (self.didAttemptResume) {
+        return;
+    }
+    self.didAttemptResume = YES;
+
+    NSString *key = [self resumeStorageKey];
+    if (key == nil) {
+        return;
+    }
+    NSDictionary *entry = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kBrowserVideoResumePositionsDefaultsKey][key];
+    NSTimeInterval position = [entry[@"position"] doubleValue];
+    if (position < kBrowserVideoResumeEdgeMargin) {
+        return;
+    }
+    NSTimeInterval duration = CMTimeGetSeconds(self.player.currentItem.duration);
+    if (isfinite(duration) && duration > 0.0 && position > duration - kBrowserVideoResumeEdgeMargin) {
+        return;
+    }
+
+    [self log:@"resuming at position=%0.1f key=%@", position, key];
+    self.pendingSeekTarget = position;
+    self.hasPendingSeek = YES;
+    [self showPositionHUDForTarget:position];
+    __weak typeof(self) weakSelf = self;
+    [self.player seekToTime:CMTimeMakeWithSeconds(position, NSEC_PER_SEC)
+            toleranceBefore:kCMTimeZero
+             toleranceAfter:kCMTimeZero
+          completionHandler:^(BOOL finished) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (finished && strongSelf != nil && fabs(strongSelf.pendingSeekTarget - position) < 0.001) {
+                strongSelf.hasPendingSeek = NO;
+            }
+        });
+    }];
+}
+
 - (void)handleFocusUpdate:(NSNotification *)notification {
     // Debug instrumentation: trace where focus moves inside AVKit's transport bar
     // while the native player is presented (paused-scrub snap-back investigation).
@@ -524,6 +688,13 @@ static NSString *BrowserNativePlayerFormatTime(NSTimeInterval time) {
     [self log:@"focus %@ -> %@",
      previousItem ? NSStringFromClass([(id)previousItem class]) : @"(nil)",
      nextItem ? NSStringFromClass([(id)nextItem class]) : @"(nil)"];
+}
+
+- (void)handlePlayerItemDidPlayToEndTime:(NSNotification *)notification {
+    (void)notification;
+    [self log:@"played to end"];
+    // Watched to the end: don't offer resume next time.
+    [self clearResumePosition];
 }
 
 - (void)handlePlayerItemFailedToPlayToEndTime:(NSNotification *)notification {
@@ -553,6 +724,7 @@ static NSString *BrowserNativePlayerFormatTime(NSTimeInterval time) {
                  CMTimeGetSeconds(self.player.currentItem.duration),
                  self.player.currentItem.isPlaybackLikelyToKeepUp,
                  self.player.currentItem.isPlaybackBufferEmpty];
+                [self restoreResumePositionIfAvailable];
                 break;
             case AVPlayerItemStatusFailed:
                 [self log:@"item status=failed error=%@", self.player.currentItem.error];
