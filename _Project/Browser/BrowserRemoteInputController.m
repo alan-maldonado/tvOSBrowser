@@ -18,6 +18,11 @@ static UIImage *BrowserPointerCursor(void) {
     return image;
 }
 
+// The hand's fingertip sits ~14pt right of its bitmap's top-left corner, while
+// the arrow's tip is at the corner. When swapping images the view is shifted by
+// this amount so the visual hotspot stays anchored; cursorAimPoint compensates.
+static CGFloat const kBrowserPointerHotspotOffsetX = 14.0;
+
 static NSString *BrowserPressTypeString(UIPressType type) {
     switch (type) {
         case UIPressTypeMenu: return @"Menu";
@@ -63,6 +68,12 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 // (up=tabs, left=history, down=favorites, right=new tab).
 @property (nonatomic) UIPressType lastArrowPressType;
 @property (nonatomic) CFTimeInterval lastArrowPressTimestamp;
+
+// Click stabilization: pressing the clickpad wiggles the finger on the touch
+// surface, dragging the cursor right before the (deferred) click lands. Freeze
+// the cursor from press-began until the click resolves.
+@property (nonatomic) BOOL cursorFrozenForClick;
+@property (nonatomic) CFTimeInterval cursorFreezeTimestamp;
 
 @end
 
@@ -211,6 +222,8 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     }
 
     self.awaitingSecondSelectPress = NO;
+    // The click resolves right below, at the frozen (aimed) position.
+    self.cursorFrozenForClick = NO;
     self.lastTouchLocation = CGPointMake(-1, -1);
 
     if ([self.host browserRemoteInputControllerPresentedViewController] != nil) {
@@ -218,7 +231,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     }
 
     if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
-        [self.host browserRemoteInputControllerHandleTabOverviewSelectionAtPoint:self.cursorView.frame.origin];
+        [self.host browserRemoteInputControllerHandleTabOverviewSelectionAtPoint:[self cursorAimPoint]];
         return;
     }
 
@@ -230,6 +243,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     if (self.awaitingSecondSelectPress && (now - self.lastSelectPressTimestamp) < 0.35) {
         self.awaitingSecondSelectPress = NO;
         self.lastSelectPressTimestamp = now;
+        self.cursorFrozenForClick = NO;
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(handleDeferredSelectPressAction) object:nil];
         if (![self.host browserRemoteInputControllerTabOverviewVisible]) {
             [self setCursorModeEnabled:!self.cursorModeEnabled];
@@ -299,6 +313,16 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
               BrowserPressPhaseString(press.phase),
               [self.host browserRemoteInputControllerPresentedViewController] == nil ? @"(nil)" : NSStringFromClass([[self.host browserRemoteInputControllerPresentedViewController] class]));
     }
+    if (press != nil && press.type == UIPressTypeSelect &&
+        self.cursorModeEnabled &&
+        [self.host browserRemoteInputControllerPresentedViewController] == nil &&
+        ![self.host browserRemoteInputControllerTopBarFocusActive]) {
+        // Anchor the cursor where the user aimed: the physical click is about to
+        // drag the finger across the touch surface.
+        self.cursorFrozenForClick = YES;
+        self.cursorFreezeTimestamp = CACurrentMediaTime();
+        NSLog(@"[InputTrace][Root] cursor frozen for click");
+    }
     (void)event;
 }
 
@@ -365,7 +389,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
             return YES;
         }
         if (press.type == UIPressTypeSelect) {
-            [self.host browserRemoteInputControllerHandleTabOverviewSelectionAtPoint:self.cursorView.frame.origin];
+            [self.host browserRemoteInputControllerHandleTabOverviewSelectionAtPoint:[self cursorAimPoint]];
             return YES;
         }
     }
@@ -480,6 +504,18 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         UIView *targetView = activeScrollView ?: self.rootView;
         CGPoint location = [touch locationInView:targetView];
 
+        if (self.cursorFrozenForClick &&
+            (CACurrentMediaTime() - self.cursorFreezeTimestamp) > 1.2) {
+            // Safety: never leave the cursor frozen if the click never resolved.
+            self.cursorFrozenForClick = NO;
+        }
+        if (self.cursorFrozenForClick) {
+            // Swallow the click-induced wiggle; keep the baseline current so the
+            // cursor doesn't jump when it unfreezes.
+            self.lastTouchLocation = location;
+            break;
+        }
+
         if (self.lastTouchLocation.x == -1 && self.lastTouchLocation.y == -1) {
             self.lastTouchLocation = location;
         } else {
@@ -498,11 +534,11 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         }
 
         if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
-            [self updateCursorPointerState:[self.host browserRemoteInputControllerTabOverviewContainsPoint:self.cursorView.frame.origin]];
+            [self updateCursorPointerState:[self.host browserRemoteInputControllerTabOverviewContainsPoint:[self cursorAimPoint]]];
             break;
         }
         if (self.cursorModeEnabled) {
-            NSString *containsLink = [self.host browserRemoteInputControllerHoverStateAtCursorPoint:self.cursorView.frame.origin];
+            NSString *containsLink = [self.host browserRemoteInputControllerHoverStateAtCursorPoint:[self cursorAimPoint]];
             if ([containsLink isEqualToString:@"true"]) {
                 [self updateCursorPointerState:YES];
             } else if ([containsLink isEqualToString:@"false"]) {
@@ -524,8 +560,26 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     if (self.cursorShowingPointer == showingPointer && self.cursorView.image != nil) {
         return;
     }
+    BOOL stateChanged = (self.cursorShowingPointer != showingPointer);
     self.cursorShowingPointer = showingPointer;
     self.cursorView.image = showingPointer ? BrowserPointerCursor() : BrowserDefaultCursor();
+    if (stateChanged) {
+        // Shift the view so the fingertip lands exactly where the arrow tip was
+        // (and vice versa): the swap doesn't visually move the aim point.
+        CGRect frame = self.cursorView.frame;
+        frame.origin.x += showingPointer ? -kBrowserPointerHotspotOffsetX : kBrowserPointerHotspotOffsetX;
+        self.cursorView.frame = frame;
+    }
+}
+
+- (CGPoint)cursorAimPoint {
+    // The logical aim point (arrow tip / hand fingertip), independent of which
+    // image is showing. Use this instead of cursorView.frame.origin.
+    CGPoint aimPoint = self.cursorView.frame.origin;
+    if (self.cursorShowingPointer) {
+        aimPoint.x += kBrowserPointerHotspotOffsetX;
+    }
+    return aimPoint;
 }
 
 @end

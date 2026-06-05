@@ -169,7 +169,7 @@ static UIColor *kTextColor(void) {
 }
 
 - (CGPoint)browserDOMPointForCursor {
-    return [self.domInteractionService DOMPointForCursorOrigin:self.remoteInputController.cursorView.frame.origin
+    return [self.domInteractionService DOMPointForCursorOrigin:[self.remoteInputController cursorAimPoint]
                                                         inView:self.view
                                                        webView:self.webview];
 }
@@ -440,7 +440,7 @@ static UIColor *kTextColor(void) {
         return;
     }
 
-    CGPoint point = [self.view convertPoint:self.remoteInputController.cursorView.frame.origin toView:self.webview];
+    CGPoint point = [self.view convertPoint:[self.remoteInputController cursorAimPoint] toView:self.webview];
     if (point.y < 0) {
         [self activateTopBarFocusMode];
         return;

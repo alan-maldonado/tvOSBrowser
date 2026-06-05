@@ -42,6 +42,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (instancetype)init NS_UNAVAILABLE;
 
+// Logical aim point of the cursor (arrow tip / hand fingertip), independent of
+// which cursor image is currently showing. Prefer this over cursorView.frame.origin.
+- (CGPoint)cursorAimPoint;
+
 - (void)handleGlobalSelectPressEndedNotification;
 - (void)handlePressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event;
 - (BOOL)handlePressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event;
