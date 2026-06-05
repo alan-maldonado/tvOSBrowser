@@ -58,6 +58,7 @@ static CGFloat const kTabCardURLHeight = 64.0;
 - (nullable BrowserTabViewModel *)tabForDisplayItemIndex:(NSInteger)displayItemIndex;
 - (void)handleSelectionForDisplayItemIndex:(NSInteger)displayItemIndex;
 - (void)handleCloseRequestForDisplayItemIndex:(NSInteger)displayItemIndex;
+- (BOOL)closeTabForDisplayItemIndex:(NSInteger)displayItemIndex;
 - (void)handleAlternateAction;
 - (void)reloadPresentedOverviewIfNeeded;
 - (void)overviewViewControllerDidDisappear:(BrowserTabOverviewViewController *)viewController;
@@ -210,6 +211,7 @@ static CGFloat const kTabCardURLHeight = 64.0;
 @property (nonatomic) UICollectionView *collectionView;
 @property (nonatomic) UILabel *footerLabel;
 @property (nonatomic) NSInteger preferredFocusItemIndex;
+@property (nonatomic) BOOL closeAnimationInProgress;
 
 @end
 
@@ -379,8 +381,57 @@ static CGFloat const kTabCardURLHeight = 64.0;
     if (focusedItemIndex == NSNotFound || focusedItemIndex >= self.overviewController.viewModel.tabs.count) {
         return;
     }
+    if (self.closeAnimationInProgress) {
+        return;
+    }
     self.preferredFocusItemIndex = focusedItemIndex;
-    [self.overviewController handleCloseRequestForDisplayItemIndex:focusedItemIndex];
+
+    UICollectionViewCell *cell = [self.collectionView cellForItemAtIndexPath:[NSIndexPath indexPathForItem:focusedItemIndex inSection:0]];
+    if (cell == nil || self.overviewController.viewModel.tabs.count <= 1) {
+        // Not visible (or last tab, which close will refuse): no animation path.
+        [self.overviewController handleCloseRequestForDisplayItemIndex:focusedItemIndex];
+        return;
+    }
+
+    // App-switcher style: the card flies up and fades, then neighbors close ranks.
+    self.closeAnimationInProgress = YES;
+    [UIView animateWithDuration:0.28
+                          delay:0.0
+                        options:UIViewAnimationOptionCurveEaseIn
+                     animations:^{
+        cell.transform = CGAffineTransformConcat(CGAffineTransformMakeScale(0.85, 0.85),
+                                                 CGAffineTransformMakeTranslation(0.0, -160.0));
+        cell.alpha = 0.0;
+    }
+                     completion:^(__unused BOOL finished) {
+        [self finishCloseAnimationForItemIndex:focusedItemIndex cell:cell];
+    }];
+}
+
+- (void)finishCloseAnimationForItemIndex:(NSInteger)itemIndex cell:(UICollectionViewCell *)cell {
+    void (^restoreCellAppearance)(void) = ^{
+        cell.transform = CGAffineTransformIdentity;
+        cell.alpha = 1.0;
+    };
+
+    if (![self.overviewController closeTabForDisplayItemIndex:itemIndex]) {
+        // Close refused: snap the card back into place.
+        [UIView animateWithDuration:0.2 animations:restoreCellAppearance];
+        self.closeAnimationInProgress = NO;
+        return;
+    }
+
+    NSInteger remainingTabs = self.overviewController.viewModel.tabs.count;
+    self.preferredFocusItemIndex = MIN(itemIndex, MAX(remainingTabs - 1, 0));
+    [self.collectionView performBatchUpdates:^{
+        [self.collectionView deleteItemsAtIndexPaths:@[[NSIndexPath indexPathForItem:itemIndex inSection:0]]];
+    } completion:^(__unused BOOL finished) {
+        // The cell gets recycled: clear the animated state before reuse.
+        restoreCellAppearance();
+        self.closeAnimationInProgress = NO;
+        [self setNeedsFocusUpdate];
+        [self updateFocusIfNeeded];
+    }];
 }
 
 - (NSInteger)currentFocusedItemIndex {
@@ -552,13 +603,21 @@ static CGFloat const kTabCardURLHeight = 64.0;
 }
 
 - (void)handleCloseRequestForDisplayItemIndex:(NSInteger)displayItemIndex {
+    if ([self closeTabForDisplayItemIndex:displayItemIndex]) {
+        [self reloadPresentedOverviewIfNeeded];
+    }
+}
+
+// Closes the tab without reloading the overview, so the caller can drive the
+// collection view update (animated deletion) itself.
+- (BOOL)closeTabForDisplayItemIndex:(NSInteger)displayItemIndex {
     NSInteger tabIndex = displayItemIndex;
     if (tabIndex < 0 || tabIndex >= self.viewModel.tabs.count || self.viewModel.tabs.count <= 1) {
-        return;
+        return NO;
     }
 
     [self.host browserTabOverviewControllerCloseTabAtIndex:tabIndex];
-    [self reloadPresentedOverviewIfNeeded];
+    return YES;
 }
 
 - (void)handleAlternateAction {
