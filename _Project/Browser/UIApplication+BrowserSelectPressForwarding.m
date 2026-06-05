@@ -87,6 +87,22 @@ static BOOL BrowserNativePlayerIsEffectivelyPaused(UIViewController *viewControl
     return NO;
 }
 
+static BOOL BrowserNativePlayerIsScanning(UIViewController *viewController) {
+    SEL scanningSelector = NSSelectorFromString(@"isScanning");
+    if (viewController != nil && [viewController respondsToSelector:scanningSelector]) {
+        return ((BOOL (*)(id, SEL))objc_msgSend)(viewController, scanningSelector);
+    }
+    return NO;
+}
+
+static BOOL BrowserNativePlayerHasCancelableSeekSession(UIViewController *viewController) {
+    SEL sessionSelector = NSSelectorFromString(@"hasCancelableSeekSession");
+    if (viewController != nil && [viewController respondsToSelector:sessionSelector]) {
+        return ((BOOL (*)(id, SEL))objc_msgSend)(viewController, sessionSelector);
+    }
+    return NO;
+}
+
 static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIApplication *application, Class nativeVideoPlayerClass) {
     for (UIWindow *window in application.windows) {
         if (window.hidden || window.rootViewController == nil) {
@@ -217,13 +233,34 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
                   nativeVideoPlayerViewController == nil ? @"(nil)" : NSStringFromClass([nativeVideoPlayerViewController class]));
         }
 
-        if (press.type == UIPressTypeMenu && press.phase == UIPressPhaseBegan) {
+        if (press.type == UIPressTypeMenu) {
             if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
-                NSLog(@"[InputTrace][App] swallow Menu for native player");
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    [nativeVideoPlayerViewController dismissViewControllerAnimated:YES completion:nil];
-                });
-                return;
+                if (press.phase == UIPressPhaseBegan) {
+                    // While fast-forwarding or mid scrub/skip exploration, Menu cancels
+                    // and returns to where it started instead of closing the player.
+                    SEL cancelScanSelector = NSSelectorFromString(@"cancelScanningAndReturnToOrigin");
+                    SEL cancelSeekSelector = NSSelectorFromString(@"cancelSeekSessionAndReturnToOrigin");
+                    UIViewController *playerViewController = nativeVideoPlayerViewController;
+                    if (BrowserNativePlayerIsScanning(playerViewController) &&
+                        [playerViewController respondsToSelector:cancelScanSelector]) {
+                        NSLog(@"[InputTrace][App] swallow Menu: cancel scanning for native player");
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            ((void (*)(id, SEL))objc_msgSend)(playerViewController, cancelScanSelector);
+                        });
+                    } else if (BrowserNativePlayerHasCancelableSeekSession(playerViewController) &&
+                               [playerViewController respondsToSelector:cancelSeekSelector]) {
+                        NSLog(@"[InputTrace][App] swallow Menu: cancel seek session for native player");
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            ((void (*)(id, SEL))objc_msgSend)(playerViewController, cancelSeekSelector);
+                        });
+                    } else {
+                        NSLog(@"[InputTrace][App] swallow Menu for native player");
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            [nativeVideoPlayerViewController dismissViewControllerAnimated:YES completion:nil];
+                        });
+                    }
+                }
+                return; // swallow every phase while the player is up
             }
         }
 

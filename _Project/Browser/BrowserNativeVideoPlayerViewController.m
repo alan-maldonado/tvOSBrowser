@@ -50,12 +50,19 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
 @property (nonatomic, strong) UILabel *scanRateLabel;
 @property (nonatomic, strong) NSTimer *scanTimer;
 @property (nonatomic, assign) NSTimeInterval scanTargetTime;
+@property (nonatomic, assign) NSTimeInterval scanOriginTime;
 @property (nonatomic, assign) BOOL scanSeekInProgress;
 
 // Seeks are async: while one is in flight, currentTime is stale. Accumulate
 // successive skips on the pending target so rapid scrubbing actually advances.
 @property (nonatomic, assign) NSTimeInterval pendingSeekTarget;
 @property (nonatomic, assign) BOOL hasPendingSeek;
+
+// Scrub/skip exploration session: starts on the first seek, commits on
+// play/pause (or after 5s of normal playback); Menu cancels back to its origin.
+@property (nonatomic, assign) BOOL seekSessionActive;
+@property (nonatomic, assign) NSTimeInterval seekSessionOriginTime;
+@property (nonatomic, assign) NSTimeInterval seekSessionLastActivity;
 
 // Our transport bar (AVKit's controls are disabled): progress + elapsed/remaining.
 // Persistent while paused, auto-hides shortly after activity while playing.
@@ -220,6 +227,8 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
 }
 
 - (void)togglePlayback {
+    // Any explicit play/pause commits the current scrub/skip exploration.
+    self.seekSessionActive = NO;
     if ([self isScanning]) {
         // Cancel fast-forward and resume normal playback from the current position.
         [self log:@"toggle stop scanning, resume 1x"];
@@ -258,6 +267,8 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
         if (!wasScanning) {
             NSTimeInterval currentTime = CMTimeGetSeconds(self.player.currentTime);
             self.scanTargetTime = isfinite(currentTime) ? currentTime : 0.0;
+            // Remember where scanning began so Menu (Back) can cancel back to it.
+            self.scanOriginTime = self.scanTargetTime;
             [self.player pause];
         }
         if (self.scanTimer == nil) {
@@ -286,6 +297,62 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
     [self.scanTimer invalidate];
     self.scanTimer = nil;
     self.scanSeekInProgress = NO;
+}
+
+- (void)cancelScanningAndReturnToOrigin {
+    if (![self isScanning]) {
+        return;
+    }
+    [self log:@"cancel scanning"];
+    [self stopScanTimer];
+    self.scanRate = 1.0f;
+    [self updateScanRateLabel];
+    [self seekToOriginAndPlay:self.scanOriginTime];
+}
+
+- (BOOL)hasCancelableSeekSession {
+    if (!self.seekSessionActive) {
+        return NO;
+    }
+    if ([self isEffectivelyPaused]) {
+        // Paused exploration stays cancelable until committed with play.
+        return YES;
+    }
+    // While playing, the session auto-commits shortly after the last seek.
+    return ([NSDate timeIntervalSinceReferenceDate] - self.seekSessionLastActivity) <= 5.0;
+}
+
+- (void)cancelSeekSessionAndReturnToOrigin {
+    if (!self.seekSessionActive) {
+        return;
+    }
+    NSTimeInterval origin = self.seekSessionOriginTime;
+    self.seekSessionActive = NO;
+    [self log:@"cancel seek session"];
+    [self seekToOriginAndPlay:origin];
+}
+
+- (void)seekToOriginAndPlay:(NSTimeInterval)origin {
+    [self log:@"return to origin=%0.3f", origin];
+    self.pendingSeekTarget = origin;
+    self.hasPendingSeek = YES;
+    [self showPositionHUDForTarget:origin];
+    __weak typeof(self) weakSelf = self;
+    [self.player seekToTime:CMTimeMakeWithSeconds(origin, NSEC_PER_SEC)
+            toleranceBefore:kCMTimeZero
+             toleranceAfter:kCMTimeZero
+          completionHandler:^(BOOL finished) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            if (finished && fabs(strongSelf.pendingSeekTarget - origin) < 0.001) {
+                strongSelf.hasPendingSeek = NO;
+            }
+            [strongSelf.player play];
+        });
+    }];
 }
 
 - (void)scanTimerStep {
@@ -409,6 +476,14 @@ static NSString *BrowserNativePlayerPressPhaseString(UIPressPhase phase) {
     if ([self isScanning]) {
         // Keep the virtual scan playhead in sync with manual seeks (trackpad scrub).
         self.scanTargetTime = targetTime;
+    } else {
+        // Track the exploration session so Menu (Back) can cancel to its origin.
+        if (!self.seekSessionActive) {
+            self.seekSessionActive = YES;
+            self.seekSessionOriginTime = currentTime;
+            [self log:@"seek session origin=%0.3f", currentTime];
+        }
+        self.seekSessionLastActivity = [NSDate timeIntervalSinceReferenceDate];
     }
     self.pendingSeekTarget = targetTime;
     self.hasPendingSeek = YES;
