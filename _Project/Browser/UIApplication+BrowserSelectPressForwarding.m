@@ -1,5 +1,4 @@
 #import <UIKit/UIKit.h>
-#import <QuartzCore/QuartzCore.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -7,10 +6,12 @@ NSString * const BrowserGlobalSelectPressEndedNotification = @"BrowserGlobalSele
 static BOOL sBrowserNativeScrubTracking = NO;
 static CGFloat sBrowserNativePendingScrubPixels = 0.0;
 static CGPoint sBrowserNativeLastTouchLocation = {0, 0};
-static CFTimeInterval sBrowserNativeLastArrowPressTimestamp = 0.0;
-static UIPressType sBrowserNativeLastArrowPressType = (UIPressType)-1;
+static BOOL sBrowserNativeSwallowTouchSequence = NO;
+static CGFloat sBrowserNativeScrubGain = 1.0;
+static NSTimeInterval sBrowserNativeLastPausedScrubEnd = 0.0;
 static CGFloat const kBrowserNativeScrubPixelStep = 18.0;
-static CFTimeInterval const kBrowserNativeArrowDoubleTapInterval = 0.35;
+static NSTimeInterval const kBrowserNativeScrubChainInterval = 0.5;
+static CGFloat const kBrowserNativeScrubMaxGain = 6.0;
 
 static NSString *BrowserPressTypeString(UIPressType type) {
     switch (type) {
@@ -78,6 +79,14 @@ static UIViewController *BrowserFindViewControllerOfClass(UIViewController *view
     return nil;
 }
 
+static BOOL BrowserNativePlayerIsEffectivelyPaused(UIViewController *viewController) {
+    SEL pausedSelector = NSSelectorFromString(@"isEffectivelyPaused");
+    if (viewController != nil && [viewController respondsToSelector:pausedSelector]) {
+        return ((BOOL (*)(id, SEL))objc_msgSend)(viewController, pausedSelector);
+    }
+    return NO;
+}
+
 static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIApplication *application, Class nativeVideoPlayerClass) {
     for (UIWindow *window in application.windows) {
         if (window.hidden || window.rootViewController == nil) {
@@ -126,7 +135,21 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
 
                 CGPoint location = [touch locationInView:nil];
                 if (touch.phase == UITouchPhaseBegan) {
-                    sBrowserNativeScrubTracking = (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil);
+                    BOOL playerPresented = (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil);
+                    BOOL paused = playerPresented && BrowserNativePlayerIsEffectivelyPaused(nativeVideoPlayerViewController);
+                    sBrowserNativeScrubTracking = playerPresented;
+                    // While paused we own scrubbing entirely: swallow the touch sequence so
+                    // AVPlayerViewController's internal preview scrubber (whose commit we
+                    // can't drive reliably from outside) never engages. Our seeks move the
+                    // real playhead and the paused frame follows.
+                    sBrowserNativeSwallowTouchSequence = paused;
+                    if (paused) {
+                        BOOL chained = (touch.timestamp - sBrowserNativeLastPausedScrubEnd) < kBrowserNativeScrubChainInterval;
+                        sBrowserNativeScrubGain = chained ? MIN(sBrowserNativeScrubGain * 1.6, kBrowserNativeScrubMaxGain) : 1.0;
+                        NSLog(@"[InputTrace][App] paused scrub began gain=%.1f", sBrowserNativeScrubGain);
+                    } else {
+                        sBrowserNativeScrubGain = 1.0;
+                    }
                     sBrowserNativePendingScrubPixels = 0.0;
                     sBrowserNativeLastTouchLocation = location;
                     continue;
@@ -137,26 +160,36 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
                 }
 
                 if (touch.phase == UITouchPhaseMoved) {
-                    CGFloat deltaX = location.x - sBrowserNativeLastTouchLocation.x;
+                    CGFloat deltaX = (location.x - sBrowserNativeLastTouchLocation.x) * sBrowserNativeScrubGain;
                     sBrowserNativeLastTouchLocation = location;
                     sBrowserNativePendingScrubPixels += deltaX;
 
                     SEL scrubSelector = NSSelectorFromString(@"scrubByHorizontalDelta:");
                     if ([nativeVideoPlayerViewController respondsToSelector:scrubSelector]) {
-                        while (fabs(sBrowserNativePendingScrubPixels) >= kBrowserNativeScrubPixelStep) {
-                            CGFloat step = sBrowserNativePendingScrubPixels > 0.0 ? kBrowserNativeScrubPixelStep : -kBrowserNativeScrubPixelStep;
-                            ((void (*)(id, SEL, CGFloat))objc_msgSend)(nativeVideoPlayerViewController, scrubSelector, step);
-                            sBrowserNativePendingScrubPixels -= step;
-                            NSLog(@"[InputTrace][App] scrub step delta=%.2f", step);
+                        // Coalesce whole steps into a single scrub call per move event.
+                        CGFloat steps = trunc(sBrowserNativePendingScrubPixels / kBrowserNativeScrubPixelStep);
+                        if (steps != 0.0) {
+                            CGFloat pixels = steps * kBrowserNativeScrubPixelStep;
+                            ((void (*)(id, SEL, CGFloat))objc_msgSend)(nativeVideoPlayerViewController, scrubSelector, pixels);
+                            sBrowserNativePendingScrubPixels -= pixels;
+                            NSLog(@"[InputTrace][App] scrub step delta=%.2f gain=%.1f", pixels, sBrowserNativeScrubGain);
                         }
                     }
                 }
 
                 if (touch.phase == UITouchPhaseEnded || touch.phase == UITouchPhaseCancelled) {
+                    if (sBrowserNativeSwallowTouchSequence) {
+                        sBrowserNativeLastPausedScrubEnd = touch.timestamp;
+                    }
                     sBrowserNativeScrubTracking = NO;
                     sBrowserNativePendingScrubPixels = 0.0;
                 }
             }
+        }
+
+        if (sBrowserNativeSwallowTouchSequence) {
+            // Paused-scrub touches never reach AVKit; flag is recomputed on the next Began.
+            return;
         }
 
         [self browser_sendEvent:event];
@@ -194,57 +227,51 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
             }
         }
 
-        if (press.type == UIPressTypePlayPause && press.phase == UIPressPhaseEnded) {
+        if ((press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) && press.phase == UIPressPhaseEnded) {
             if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
-                SEL togglePlaybackSelector = NSSelectorFromString(@"togglePlayback");
-                if ([nativeVideoPlayerViewController respondsToSelector:togglePlaybackSelector]) {
-                    NSLog(@"[InputTrace][App] swallow PlayPause for native player");
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        ((void (*)(id, SEL))objc_msgSend)(nativeVideoPlayerViewController, togglePlaybackSelector);
-                    });
-                    return;
-                }
-            }
-        }
-
-        if (press.type == UIPressTypeSelect && press.phase == UIPressPhaseEnded) {
-            if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
-                SEL togglePlaybackSelector = NSSelectorFromString(@"togglePlayback");
-                if ([nativeVideoPlayerViewController respondsToSelector:togglePlaybackSelector]) {
-                    NSLog(@"[InputTrace][App] swallow Select for native player");
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        ((void (*)(id, SEL))objc_msgSend)(nativeVideoPlayerViewController, togglePlaybackSelector);
-                    });
-                    return;
-                }
-            }
-        }
-
-        if ((press.type == UIPressTypeLeftArrow || press.type == UIPressTypeRightArrow) && press.phase == UIPressPhaseEnded) {
-            if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
-                SEL skipSelector = NSSelectorFromString(@"skipByInterval:");
-                if ([nativeVideoPlayerViewController respondsToSelector:skipSelector]) {
-                    CFTimeInterval now = CACurrentMediaTime();
-                    BOOL isDoubleTap = (sBrowserNativeLastArrowPressType == press.type) &&
-                                       ((now - sBrowserNativeLastArrowPressTimestamp) <= kBrowserNativeArrowDoubleTapInterval);
-                    sBrowserNativeLastArrowPressType = press.type;
-                    sBrowserNativeLastArrowPressTimestamp = now;
-
-                    if (isDoubleTap) {
-                        NSTimeInterval delta = (press.type == UIPressTypeRightArrow) ? 5.0 : -5.0;
-                        NSLog(@"[InputTrace][App] swallow %@ double tap for native player (delta=%0.1f)",
-                              BrowserPressTypeString(press.type), delta);
-                        dispatch_async(dispatch_get_main_queue(), ^{
-                            ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(nativeVideoPlayerViewController, skipSelector, delta);
-                        });
-                        sBrowserNativeLastArrowPressType = (UIPressType)-1;
-                        sBrowserNativeLastArrowPressTimestamp = 0.0;
-                    } else {
-                        NSLog(@"[InputTrace][App] swallow %@ single tap for native player (waiting for double tap)",
+                // While paused, forward to AVPlayerViewController so its paused-scrubbing
+                // preview gets committed and playback resumes from the scrubbed position.
+                if (BrowserNativePlayerIsEffectivelyPaused(nativeVideoPlayerViewController)) {
+                    NSLog(@"[InputTrace][App] forward %@ to native player (paused, native scrub commit)",
+                          BrowserPressTypeString(press.type));
+                } else {
+                    SEL togglePlaybackSelector = NSSelectorFromString(@"togglePlayback");
+                    if ([nativeVideoPlayerViewController respondsToSelector:togglePlaybackSelector]) {
+                        NSLog(@"[InputTrace][App] swallow %@ for native player",
                               BrowserPressTypeString(press.type));
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            ((void (*)(id, SEL))objc_msgSend)(nativeVideoPlayerViewController, togglePlaybackSelector);
+                        });
+                        return;
                     }
-                    return;
                 }
+            }
+        }
+
+        if (press.type == UIPressTypeLeftArrow || press.type == UIPressTypeRightArrow) {
+            if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
+                // While paused, let AVPlayerViewController handle arrows natively (they move
+                // the paused-scrubbing preview, committed on play).
+                if (BrowserNativePlayerIsEffectivelyPaused(nativeVideoPlayerViewController)) {
+                    continue;
+                }
+                // Swallow EVERY phase: if Began leaks through to AVPlayerViewController without
+                // a matching Ended, it thinks the arrow is held down and starts its internal
+                // scanning (runaway x2/x3 fast-forward that can't be cancelled).
+                if (press.phase == UIPressPhaseEnded) {
+                    SEL arrowSelector = (press.type == UIPressTypeRightArrow)
+                        ? NSSelectorFromString(@"handleRightArrowPress")
+                        : NSSelectorFromString(@"handleLeftArrowPress");
+                    if ([nativeVideoPlayerViewController respondsToSelector:arrowSelector]) {
+                        NSLog(@"[InputTrace][App] swallow %@ press for native player",
+                              BrowserPressTypeString(press.type));
+                        UIViewController *playerViewController = nativeVideoPlayerViewController;
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            ((void (*)(id, SEL))objc_msgSend)(playerViewController, arrowSelector);
+                        });
+                    }
+                }
+                return;
             }
         }
     }
