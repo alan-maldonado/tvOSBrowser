@@ -2,11 +2,12 @@
   "images" : [
     {
       "idiom" : "tv",
-      "filename" : "b2.png",
+      "filename" : "nebula-front.png",
       "scale" : "1x"
     },
     {
       "idiom" : "tv",
+      "filename" : "nebula-front@2x.png",
       "scale" : "2x"
     }
   ],

@@ -136,7 +136,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
     _menuImageView = [self newIconViewNamed:@"menu-2"];
 
     _URLLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    _URLLabel.text = @"tvOS Browser";
+    _URLLabel.text = @"Nebula";
     _URLLabel.textAlignment = NSTextAlignmentCenter;
     _URLLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.72];
     _URLLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
