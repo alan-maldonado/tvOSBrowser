@@ -14,6 +14,8 @@ tvOS Browser
 - New modern Liquid Glass UI
 - Added (experimental) full screen video player, which you can enable in the Menu
 
+This project is an improved version developed with the help of AI ([Claude Code](https://claude.com/claude-code)): the full screen video player transport controls (fast-forward, scrubbing, transport bar), the back/double-back navigation, the arrow button shortcuts, and several input-handling fixes were built in collaboration with it.
+
 This code is provided as is with no warrenty or liability. Use at your own risk and do ***not*** distribute builds of this project on the App Store.
 
 
@@ -30,9 +32,30 @@ How to Use tvOSBrowser
 Quick start:
 - Double press on the center of the touch area of the Apple TV Remote to switch between cursor & scroll mode.
 - Press the touch area while in cursor mode to click.
-- Single tap to Menu button to go back, or exit if it's root page.
-- Single tap the Play/Pause button to show the Quick Menu, with: input URLs, search Google, reload the page, or go forward.
+- Single tap the Menu button to go back. To exit the app, tap Menu (Back) twice within 2 seconds when there is no more history ("Press Back again to exit").
+- Single tap the Play/Pause button to show the Quick Menu, with: input URLs, search Google, reload the page, go forward, or jump to the root page of the current site ("Go to <domain>").
 - Double tap the Play/Pause button to: display the full Side Menu, with: Favorites, History, set/open homepage, change user agent, clear cache, and clear cookies and more.
+
+Arrow buttons (clickpad edges) while browsing:
+- Single press Up/Down: scroll the page vertically (Up at the top of the page moves focus to the top Navigation bar).
+- Single press Left/Right: scroll the page horizontally.
+- Double press Up: open the Tabs overview.
+- Double press Down: open Favorites.
+- Double press Left: open History.
+- Double press Right: open a New Tab.
+
+Tabs overview:
+- Swipe left/right to move between tab cards, press the touch area to switch tabs.
+- Swipe up (or tap Play/Pause) to close the focused tab.
+- Tap Menu to close the overview.
+
+Full screen video player (when enabled in the Menu):
+- Press Right repeatedly to fast-forward at 2x, 4x, 8x, 16x and up to 32x; press Left to step the speed back down.
+- Press Play/Pause (or the touch area) while fast-forwarding to resume normal playback from that exact point.
+- Press Left/Right while paused to skip ±10 seconds.
+- Swipe on the touch area to scrub the timeline; while paused, consecutive quick swipes accelerate the scrubbing (up to 6x).
+- A transport bar shows the current position, progress, and remaining time (or total duration, configurable in the Side Menu). It stays visible while paused and auto-hides during playback.
+- Tap Menu to close the player.
 
 The Side menu lets you:
 - Go to Home page
@@ -45,6 +68,7 @@ The Side menu lets you:
 - Set page Scaling options
 - Increase/decrease Font size
 - Enable/disable Full Screen player
+- Choose the video player time display (remaining time or total duration)
 - Switch Desktop/Mobile User Agent
 - Show some video diagnostics
 - Clear cache
