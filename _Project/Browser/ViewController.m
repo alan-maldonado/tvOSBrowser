@@ -507,6 +507,17 @@ static UIColor *kTextColor(void) {
     [self presentViewController:viewController animated:YES completion:nil];
 }
 
+- (void)webView:(id)webView requestsPresentingAlertController:(UIAlertController *)alertController {
+    (void)webView;
+    // JavaScript panels must always get presented (their completion handler keeps
+    // the page's JS waiting), so present on top of whatever is already up.
+    UIViewController *presenter = self;
+    while (presenter.presentedViewController != nil && !presenter.presentedViewController.isBeingDismissed) {
+        presenter = presenter.presentedViewController;
+    }
+    [presenter presentViewController:alertController animated:YES completion:nil];
+}
+
 - (void)browserLoadHomePage {
     [self loadHomePage];
 }

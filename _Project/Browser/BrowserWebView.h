@@ -10,6 +10,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)webViewDidStartLoad:(id _Nonnull)webView;
 - (void)webViewDidFinishLoad:(id _Nonnull)webView;
 - (void)webView:(id _Nonnull)webView didFailLoadWithError:(NSError * _Nonnull)error;
+// JavaScript panels (alert/confirm/prompt) ready to be presented by the host.
+- (void)webView:(id _Nonnull)webView requestsPresentingAlertController:(UIAlertController * _Nonnull)alertController;
 
 @end
 

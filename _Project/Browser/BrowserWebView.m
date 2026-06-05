@@ -4,6 +4,37 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+// WebKit requires JavaScript panel completion handlers to be called exactly once;
+// deallocating one uncalled raises an exception. Alerts can get dismissed without
+// any action firing (e.g. our global Menu handling), so this guard fires a fallback
+// on dealloc unless an action fulfilled it first.
+@interface BrowserWebViewCompletionGuard : NSObject
++ (instancetype)guardWithFallback:(dispatch_block_t)fallback;
+- (void)fulfill;
+@end
+
+@implementation BrowserWebViewCompletionGuard {
+    dispatch_block_t _fallback;
+}
+
++ (instancetype)guardWithFallback:(dispatch_block_t)fallback {
+    BrowserWebViewCompletionGuard *completionGuard = [BrowserWebViewCompletionGuard new];
+    completionGuard->_fallback = [fallback copy];
+    return completionGuard;
+}
+
+- (void)fulfill {
+    _fallback = nil;
+}
+
+- (void)dealloc {
+    if (_fallback != nil) {
+        _fallback();
+    }
+}
+
+@end
+
 static NSString * const kBrowserWebViewClassName = @"WKWebView";
 static NSString * const kBrowserWebViewConfigurationClassName = @"WKWebViewConfiguration";
 static NSString * const kBrowserWebsiteDataStoreClassName = @"WKWebsiteDataStore";
@@ -972,6 +1003,108 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     if (decisionHandler != nil) {
         decisionHandler(shouldAllow ? 1 : 0);
     }
+}
+
+#pragma mark - WKUIDelegate JavaScript panels
+
+- (NSString *)javaScriptPanelTitle {
+    NSString *host = self.request.URL.host;
+    return host.length > 0 ? host : @"This page";
+}
+
+- (void)webView:(id)webView runJavaScriptAlertPanelWithMessage:(NSString *)message
+initiatedByFrame:(id)frame
+completionHandler:(void (^)(void))completionHandler {
+    (void)webView;
+    (void)frame;
+    if (![self.delegate respondsToSelector:@selector(webView:requestsPresentingAlertController:)]) {
+        if (completionHandler != nil) {
+            completionHandler();
+        }
+        return;
+    }
+    BrowserWebViewCompletionGuard *completionGuard = [BrowserWebViewCompletionGuard guardWithFallback:^{
+        completionHandler();
+    }];
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:[self javaScriptPanelTitle]
+                                                                             message:message
+                                                                      preferredStyle:UIAlertControllerStyleAlert];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                        style:UIAlertActionStyleDefault
+                                                      handler:^(__unused UIAlertAction *action) {
+        [completionGuard fulfill];
+        completionHandler();
+    }]];
+    [self.delegate webView:self requestsPresentingAlertController:alertController];
+}
+
+- (void)webView:(id)webView runJavaScriptConfirmPanelWithMessage:(NSString *)message
+initiatedByFrame:(id)frame
+completionHandler:(void (^)(BOOL))completionHandler {
+    (void)webView;
+    (void)frame;
+    if (![self.delegate respondsToSelector:@selector(webView:requestsPresentingAlertController:)]) {
+        if (completionHandler != nil) {
+            completionHandler(NO);
+        }
+        return;
+    }
+    BrowserWebViewCompletionGuard *completionGuard = [BrowserWebViewCompletionGuard guardWithFallback:^{
+        completionHandler(NO);
+    }];
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:[self javaScriptPanelTitle]
+                                                                             message:message
+                                                                      preferredStyle:UIAlertControllerStyleAlert];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                                        style:UIAlertActionStyleCancel
+                                                      handler:^(__unused UIAlertAction *action) {
+        [completionGuard fulfill];
+        completionHandler(NO);
+    }]];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                        style:UIAlertActionStyleDefault
+                                                      handler:^(__unused UIAlertAction *action) {
+        [completionGuard fulfill];
+        completionHandler(YES);
+    }]];
+    [self.delegate webView:self requestsPresentingAlertController:alertController];
+}
+
+- (void)webView:(id)webView runJavaScriptTextInputPanelWithPrompt:(NSString *)prompt
+    defaultText:(NSString *)defaultText
+initiatedByFrame:(id)frame
+completionHandler:(void (^)(NSString *))completionHandler {
+    (void)webView;
+    (void)frame;
+    if (![self.delegate respondsToSelector:@selector(webView:requestsPresentingAlertController:)]) {
+        if (completionHandler != nil) {
+            completionHandler(nil);
+        }
+        return;
+    }
+    BrowserWebViewCompletionGuard *completionGuard = [BrowserWebViewCompletionGuard guardWithFallback:^{
+        completionHandler(nil);
+    }];
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:[self javaScriptPanelTitle]
+                                                                             message:prompt
+                                                                      preferredStyle:UIAlertControllerStyleAlert];
+    [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.text = defaultText;
+    }];
+    __weak UIAlertController *weakAlertController = alertController;
+    [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                                        style:UIAlertActionStyleCancel
+                                                      handler:^(__unused UIAlertAction *action) {
+        [completionGuard fulfill];
+        completionHandler(nil);
+    }]];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                        style:UIAlertActionStyleDefault
+                                                      handler:^(__unused UIAlertAction *action) {
+        [completionGuard fulfill];
+        completionHandler(weakAlertController.textFields.firstObject.text ?: @"");
+    }]];
+    [self.delegate webView:self requestsPresentingAlertController:alertController];
 }
 
 - (id)webView:(id)webView
