@@ -385,6 +385,27 @@ static UIColor *kTextColor(void) {
         }]];
     }
 
+    // "Go to <domain>": jump to the root page of the current site. Only offered
+    // when we're somewhere deeper than the site root.
+    NSURL *currentURL = self.webview.request.URL;
+    if (currentURL.host.length > 0) {
+        NSURLComponents *rootComponents = [NSURLComponents new];
+        rootComponents.scheme = currentURL.scheme;
+        rootComponents.host = currentURL.host;
+        rootComponents.port = currentURL.port;
+        NSURL *siteRootURL = rootComponents.URL;
+        BOOL alreadyAtRoot = (currentURL.path.length == 0 || [currentURL.path isEqualToString:@"/"]) &&
+                             currentURL.query == nil &&
+                             currentURL.fragment == nil;
+        if (siteRootURL != nil && !alreadyAtRoot) {
+            [alertController addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"Go to %@", currentURL.host]
+                                                                style:UIAlertActionStyleDefault
+                                                              handler:^(__unused UIAlertAction *action) {
+                [self.webview loadRequest:[NSURLRequest requestWithURL:siteRootURL]];
+            }]];
+        }
+    }
+
     [alertController addAction:[UIAlertAction actionWithTitle:nil style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:alertController animated:YES completion:nil];
 }
