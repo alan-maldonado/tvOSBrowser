@@ -1,4 +1,5 @@
 #import "BrowserRemoteInputController.h"
+#import "BrowserPreferencesStore.h"
 
 static UIImage *BrowserDefaultCursor(void) {
     static UIImage *image;
@@ -402,7 +403,9 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     if (isArrowPress && presentedViewController == nil &&
         ![self.host browserRemoteInputControllerTabOverviewVisible]) {
         CFTimeInterval now = CACurrentMediaTime();
-        BOOL isDoublePress = (self.lastArrowPressType == press.type) &&
+        BOOL shortcutsEnabled = [[BrowserPreferencesStore new] arrowDoubleTapShortcutsEnabled];
+        BOOL isDoublePress = shortcutsEnabled &&
+                             (self.lastArrowPressType == press.type) &&
                              ((now - self.lastArrowPressTimestamp) <= 0.45);
         self.lastArrowPressType = press.type;
         self.lastArrowPressTimestamp = now;

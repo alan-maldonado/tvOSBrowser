@@ -14,12 +14,16 @@ static NSString * const kBrowserMediaDiagnosticsLogPrefix = @"[MediaDiagnostics]
 static NSString * const kBrowserWebKitMediaPrefsLogPrefix = @"[WebKitMediaPrefs]";
 
 typedef void (^BrowserAdvancedMenuItemHandler)(void);
+// Adjustable settings: applies a left(-1)/right(+1) change in place and returns
+// the row's new title — without dismissing the menu.
+typedef NSString * _Nullable (^BrowserAdvancedMenuItemAdjustHandler)(NSInteger direction);
 
 @interface BrowserAdvancedMenuItem : NSObject
 
 @property (nonatomic, copy) NSString *title;
 @property (nonatomic) UIAlertActionStyle style;
 @property (nonatomic, copy) BrowserAdvancedMenuItemHandler handler;
+@property (nonatomic, copy) BrowserAdvancedMenuItemAdjustHandler adjustHandler;
 
 + (instancetype)itemWithTitle:(NSString *)title
                         style:(UIAlertActionStyle)style
@@ -361,7 +365,7 @@ typedef void (^BrowserAdvancedMenuItemHandler)(void);
     BrowserAdvancedMenuItem *item = section.items[(NSUInteger)indexPath.row];
     UILabel *titleLabel = (UILabel *)[cell.contentView viewWithTag:kMenuTitleLabelTag];
     UIView *focusBackgroundView = [cell.contentView viewWithTag:kMenuFocusBackgroundTag];
-    titleLabel.text = item.title;
+    titleLabel.text = [self displayTitleForItem:item];
     UIColor *titleColor = (item.style == UIAlertActionStyleDestructive) ? UIColor.redColor : UIColor.whiteColor;
     titleLabel.textColor = titleColor;
     focusBackgroundView.alpha = cell.isFocused ? 1.0 : 0.0;
@@ -390,6 +394,11 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     BrowserAdvancedMenuSection *section = self.sections[(NSUInteger)indexPath.section];
     BrowserAdvancedMenuItem *item = section.items[(NSUInteger)indexPath.row];
+    if (item.adjustHandler != nil) {
+        // Adjustable settings cycle in place; the menu stays open.
+        [self adjustItemAtIndexPath:indexPath direction:1];
+        return;
+    }
     BrowserAdvancedMenuItemHandler handler = item.handler;
     [self dismissMenuWithCompletion:^{
         if (handler != nil) {
@@ -408,7 +417,51 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
         [self dismissMenuWithCompletion:nil];
         return;
     }
+    if (press != nil && (press.type == UIPressTypeLeftArrow || press.type == UIPressTypeRightArrow)) {
+        if ([self adjustFocusedItemInDirection:(press.type == UIPressTypeRightArrow ? 1 : -1)]) {
+            return;
+        }
+    }
     [super pressesEnded:presses withEvent:event];
+}
+
+// Adjustable rows are flagged with ‹ › so users know Left/Right changes them.
+- (NSString *)displayTitleForItem:(BrowserAdvancedMenuItem *)item {
+    return item.adjustHandler != nil ? [NSString stringWithFormat:@"‹ %@ ›", item.title] : item.title;
+}
+
+// Left/right on an adjustable row changes the setting in place (the menu stays
+// open so the change is visible immediately).
+- (BOOL)adjustFocusedItemInDirection:(NSInteger)direction {
+    NSIndexPath *focusedIndexPath = nil;
+    for (NSIndexPath *indexPath in self.tableView.indexPathsForVisibleRows) {
+        UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+        if (cell.isFocused) {
+            focusedIndexPath = indexPath;
+            break;
+        }
+    }
+    if (focusedIndexPath == nil) {
+        return NO;
+    }
+    return [self adjustItemAtIndexPath:focusedIndexPath direction:direction];
+}
+
+- (BOOL)adjustItemAtIndexPath:(NSIndexPath *)indexPath direction:(NSInteger)direction {
+    BrowserAdvancedMenuSection *section = self.sections[(NSUInteger)indexPath.section];
+    BrowserAdvancedMenuItem *item = section.items[(NSUInteger)indexPath.row];
+    if (item.adjustHandler == nil) {
+        return NO;
+    }
+
+    NSString *newTitle = item.adjustHandler(direction);
+    if (newTitle.length > 0) {
+        item.title = newTitle;
+        UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:indexPath];
+        UILabel *titleLabel = (UILabel *)[cell.contentView viewWithTag:9191];
+        titleLabel.text = [self displayTitleForItem:item];
+    }
+    return YES;
 }
 
 @end
@@ -434,7 +487,11 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (void)showAdvancedMenu {
-    BrowserAdvancedMenuViewController *menuViewController = [[BrowserAdvancedMenuViewController alloc] initWithTitle:@"tvOS Browser"
+    NSString *version = NSBundle.mainBundle.infoDictionary[@"CFBundleShortVersionString"];
+    NSString *menuTitle = [self stringHasVisibleContent:version]
+        ? [NSString stringWithFormat:@"tvOS Browser %@", version]
+        : @"tvOS Browser";
+    BrowserAdvancedMenuViewController *menuViewController = [[BrowserAdvancedMenuViewController alloc] initWithTitle:menuTitle
                                                                                                             sections:[self advancedMenuSections]
                                                                                                           footerText:[self advancedMenuFooterText]];
     [self.host browserPresentViewController:menuViewController];
@@ -993,44 +1050,78 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (BrowserAdvancedMenuItem *)fullscreenVideoPlaybackToggleMenuItem {
-    BOOL enabled = self.host.browserFullscreenVideoPlaybackEnabled;
-    NSString *title = enabled ? @"Disable Full Screen player" : @"Enable Full Screen player";
-    return [self advancedMenuItemWithTitle:title
-                                     style:UIAlertActionStyleDefault
-                                   handler:^{
-        self.host.browserFullscreenVideoPlaybackEnabled = !enabled;
+    NSString *(^titleForState)(BOOL) = ^NSString *(BOOL enabled) {
+        return enabled ? @"Full Screen Player: On" : @"Full Screen Player: Off";
+    };
+    BrowserAdvancedMenuItem *item = [self advancedMenuItemWithTitle:titleForState(self.host.browserFullscreenVideoPlaybackEnabled)
+                                                              style:UIAlertActionStyleDefault
+                                                            handler:^{
+        self.host.browserFullscreenVideoPlaybackEnabled = !self.host.browserFullscreenVideoPlaybackEnabled;
     }];
+    item.adjustHandler = ^NSString *(__unused NSInteger direction) {
+        BOOL next = !self.host.browserFullscreenVideoPlaybackEnabled;
+        self.host.browserFullscreenVideoPlaybackEnabled = next;
+        return titleForState(next);
+    };
+    return item;
 }
 
 - (BrowserAdvancedMenuItem *)videoHUDTimeDisplayToggleMenuItem {
-    BOOL showsTotal = [[BrowserPreferencesStore new] videoHUDShowsTotalDuration];
-    NSString *title = showsTotal ? @"Player Time: Total Duration" : @"Player Time: Remaining";
-    return [self advancedMenuItemWithTitle:title
-                                     style:UIAlertActionStyleDefault
-                                   handler:^{
-        [[BrowserPreferencesStore new] setVideoHUDShowsTotalDuration:!showsTotal];
+    NSString *(^titleForState)(BOOL) = ^NSString *(BOOL showsTotal) {
+        return showsTotal ? @"Player Time: Total Duration" : @"Player Time: Remaining";
+    };
+    BrowserPreferencesStore *preferencesStore = self.preferencesStore;
+    BrowserAdvancedMenuItem *item = [self advancedMenuItemWithTitle:titleForState(preferencesStore.videoHUDShowsTotalDuration)
+                                                              style:UIAlertActionStyleDefault
+                                                            handler:^{
+        preferencesStore.videoHUDShowsTotalDuration = !preferencesStore.videoHUDShowsTotalDuration;
     }];
+    item.adjustHandler = ^NSString *(__unused NSInteger direction) {
+        BOOL next = !preferencesStore.videoHUDShowsTotalDuration;
+        preferencesStore.videoHUDShowsTotalDuration = next;
+        return titleForState(next);
+    };
+    return item;
+}
+
+- (BrowserAdvancedMenuItem *)arrowShortcutsToggleMenuItem {
+    NSString *(^titleForState)(BOOL) = ^NSString *(BOOL enabled) {
+        return enabled ? @"Arrow Double-Press Shortcuts: On" : @"Arrow Double-Press Shortcuts: Off";
+    };
+    BrowserPreferencesStore *preferencesStore = self.preferencesStore;
+    BrowserAdvancedMenuItem *item = [self advancedMenuItemWithTitle:titleForState(preferencesStore.arrowDoubleTapShortcutsEnabled)
+                                                              style:UIAlertActionStyleDefault
+                                                            handler:^{
+        preferencesStore.arrowDoubleTapShortcutsEnabled = !preferencesStore.arrowDoubleTapShortcutsEnabled;
+    }];
+    item.adjustHandler = ^NSString *(__unused NSInteger direction) {
+        BOOL next = !preferencesStore.arrowDoubleTapShortcutsEnabled;
+        preferencesStore.arrowDoubleTapShortcutsEnabled = next;
+        return titleForState(next);
+    };
+    return item;
+}
+
+- (BrowserAdvancedMenuItem *)fontSizeAdjustableMenuItem {
+    NSString *(^titleForValue)(NSUInteger) = ^NSString *(NSUInteger fontSize) {
+        return [NSString stringWithFormat:@"Font Size: %lu%%", (unsigned long)fontSize];
+    };
+    BrowserAdvancedMenuItem *item = [self advancedMenuItemWithTitle:titleForValue(self.host.browserTextFontSize)
+                                                              style:UIAlertActionStyleDefault
+                                                            handler:nil];
+    item.adjustHandler = ^NSString *(NSInteger direction) {
+        // Clamp before assigning: the property is unsigned and the store clamps
+        // 50-200, so an underflow would wrap around to the maximum.
+        NSInteger newFontSize = (NSInteger)self.host.browserTextFontSize + direction * 5;
+        newFontSize = MIN(MAX(newFontSize, 50), 200);
+        self.host.browserTextFontSize = (NSUInteger)newFontSize;
+        [self.host browserUpdateTextFontSize];
+        return titleForValue(self.host.browserTextFontSize);
+    };
+    return item;
 }
 
 - (NSArray<BrowserAdvancedMenuSection *> *)advancedMenuSections {
-    BrowserAdvancedMenuItem *increaseFontSizeItem = [self advancedMenuItemWithTitle:@"Increase Font Size"
-                                                                               style:UIAlertActionStyleDefault
-                                                                             handler:^{
-        self.host.browserTextFontSize += 5;
-        [self.host browserUpdateTextFontSize];
-    }];
-    BrowserAdvancedMenuItem *decreaseFontSizeItem = [self advancedMenuItemWithTitle:@"Decrease Font Size"
-                                                                               style:UIAlertActionStyleDefault
-                                                                             handler:^{
-        self.host.browserTextFontSize -= 5;
-        [self.host browserUpdateTextFontSize];
-    }];
-    BrowserAdvancedMenuItem *resetFontSizeItem = [self advancedMenuItemWithTitle:@"Reset Font Size"
-                                                                            style:UIAlertActionStyleDefault
-                                                                          handler:^{
-        self.host.browserTextFontSize = 100;
-        [self.host browserUpdateTextFontSize];
-    }];
     BrowserAdvancedMenuItem *mediaDiagnosticsItem = [self advancedMenuItemWithTitle:@"Media Diagnostics"
                                                                                style:UIAlertActionStyleDefault
                                                                              handler:^{
@@ -1061,14 +1152,13 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
             [self historyMenuItem],
             [self showTabsMenuItem],
             [self newTabMenuItem],
+            [self arrowShortcutsToggleMenuItem],
         ]],
         [BrowserAdvancedMenuSection sectionWithTitle:@"Appearance"
                                                items:@[
             [self topNavigationVisibilityMenuItem],
             [self pageScalingMenuItem],
-            increaseFontSizeItem,
-            decreaseFontSizeItem,
-            resetFontSizeItem,
+            [self fontSizeAdjustableMenuItem],
         ]],
         [BrowserAdvancedMenuSection sectionWithTitle:@"Video Playback"
                                                items:@[
@@ -1097,14 +1187,15 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (NSString *)advancedMenuFooterText {
+    NSString *adjustHint = @"Settings marked ‹ › change with the Left/Right keys.";
     NSDictionary *infoDictionary = NSBundle.mainBundle.infoDictionary;
     NSString *version = infoDictionary[@"CFBundleShortVersionString"];
     BOOL hasVersion = [self stringHasVisibleContent:version];
 
     if (hasVersion) {
-        return [NSString stringWithFormat:@"Version %@", version];
+        return [NSString stringWithFormat:@"%@\nVersion %@", adjustHint, version];
     }
-    return @"";
+    return adjustHint;
 }
 
 @end

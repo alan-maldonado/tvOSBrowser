@@ -15,6 +15,9 @@ NS_ASSUME_NONNULL_BEGIN
 // NO (default): the video HUD's right label shows remaining time (-12:34).
 // YES: it shows the video's total duration instead.
 @property (nonatomic) BOOL videoHUDShowsTotalDuration;
+// Double-pressing the arrow keys triggers shortcuts (tabs/history/favorites/new
+// tab). Defaults to YES.
+@property (nonatomic) BOOL arrowDoubleTapShortcutsEnabled;
 @property (nonatomic) BOOL scalePagesToFit;
 @property (nonatomic) BOOL dontShowHintsOnLaunch;
 @property (nonatomic, copy) NSString *homePageURLString;

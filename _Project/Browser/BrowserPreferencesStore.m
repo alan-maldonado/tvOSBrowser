@@ -6,6 +6,7 @@ static NSString * const kShowTopNavigationBarDefaultsKey = @"ShowTopNavigationBa
 static NSString * const kTextFontSizeDefaultsKey = @"TextFontSize";
 static NSString * const kEnableFullscreenVideoPlaybackDefaultsKey = @"EnableFullscreenVideoPlayback";
 static NSString * const kVideoHUDShowsTotalDurationDefaultsKey = @"VideoHUDShowsTotalDuration";
+static NSString * const kArrowDoubleTapShortcutsEnabledDefaultsKey = @"ArrowDoubleTapShortcutsEnabled";
 static NSString * const kScalePagesToFitDefaultsKey = @"ScalePagesToFit";
 static NSString * const kDontShowHintsOnLaunchDefaultsKey = @"DontShowHintsOnLaunch";
 static NSString * const kHomepageDefaultsKey = @"homepage";
@@ -83,11 +84,23 @@ static NSUInteger const kMaximumTextFontSize = 200;
 }
 
 - (BOOL)fullscreenVideoPlaybackEnabled {
-    return [[self defaults] boolForKey:kEnableFullscreenVideoPlaybackDefaultsKey];
+    // Defaults to YES: videos open in the full screen player out of the box.
+    id storedValue = [[self defaults] objectForKey:kEnableFullscreenVideoPlaybackDefaultsKey];
+    return storedValue == nil ? YES : [storedValue boolValue];
 }
 
 - (void)setFullscreenVideoPlaybackEnabled:(BOOL)fullscreenVideoPlaybackEnabled {
     [[self defaults] setBool:fullscreenVideoPlaybackEnabled forKey:kEnableFullscreenVideoPlaybackDefaultsKey];
+    [[self defaults] synchronize];
+}
+
+- (BOOL)arrowDoubleTapShortcutsEnabled {
+    id storedValue = [[self defaults] objectForKey:kArrowDoubleTapShortcutsEnabledDefaultsKey];
+    return storedValue == nil ? YES : [storedValue boolValue];
+}
+
+- (void)setArrowDoubleTapShortcutsEnabled:(BOOL)arrowDoubleTapShortcutsEnabled {
+    [[self defaults] setBool:arrowDoubleTapShortcutsEnabled forKey:kArrowDoubleTapShortcutsEnabledDefaultsKey];
     [[self defaults] synchronize];
 }
 

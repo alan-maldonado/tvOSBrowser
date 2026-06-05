@@ -411,8 +411,25 @@ static UIColor *kTextColor(void) {
 }
 
 - (void)showHintsAlert {
+    NSString *guide =
+        @"BROWSING\n"
+        @"• Double press the touch surface to switch between cursor & scroll mode.\n"
+        @"• Press the touch surface in cursor mode to click.\n"
+        @"• Back goes to the previous page. Press Back twice to exit the app.\n"
+        @"• Arrow keys scroll the page. Up at the top opens the address bar.\n"
+        @"\nARROW SHORTCUTS (double press)\n"
+        @"• Up: Tabs   • Down: Favorites   • Left: History   • Right: New Tab\n"
+        @"\nMENUS\n"
+        @"• Play/Pause: Quick Menu (URL & search, reload, go forward, site home).\n"
+        @"• Double tap Play/Pause: full menu. Change settings there with Left/Right.\n"
+        @"• Tabs view: swipe up on a card to close that tab.\n"
+        @"\nVIDEO PLAYER\n"
+        @"• Right: fast-forward 2x to 32x. Left: slow down. Play/Pause: resume there.\n"
+        @"• Swipe to move through the video; while paused, quick swipes accelerate.\n"
+        @"• Back cancels fast-forward or swiping and returns to where you were.\n"
+        @"• Videos resume where you left off.";
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Usage Guide"
-                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nSingle tap to Menu button to Go Back, or Exit on root page.\nSingle tap the Play/Pause button to: Go Forward, Enter URL or Reload Page.\nDouble tap the Play/Pause to show the Advanced Menu with more options.\nUse the tabs icon in the top bar to open the tab overview."
+                                                                             message:guide
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     __weak typeof(self) weakSelf = self;

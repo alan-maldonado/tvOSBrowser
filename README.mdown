@@ -12,7 +12,7 @@ tvOS Browser
 - It's now using WKWebView instead of UIWebView, which results in much improved performance and better website rendering.
 - Added support for browser Tabs
 - New modern Liquid Glass UI
-- Added (experimental) full screen video player, which you can enable in the Menu
+- Added full screen video player, enabled by default (can be disabled in the Menu)
 
 This project is an improved version developed with the help of AI ([Claude Code](https://claude.com/claude-code)): the full screen video player transport controls (fast-forward, scrubbing, transport bar), the back/double-back navigation, the arrow button shortcuts, and several input-handling fixes were built in collaboration with it.
 
@@ -49,7 +49,7 @@ Tabs overview:
 - Swipe up (or tap Play/Pause) to close the focused tab.
 - Tap Menu to close the overview.
 
-Full screen video player (when enabled in the Menu):
+Full screen video player (enabled by default; can be disabled in the Menu):
 - Press Right repeatedly to fast-forward at 2x, 4x, 8x, 16x and up to 32x; press Left to step the speed back down.
 - Press Play/Pause (or the touch area) while fast-forwarding to resume normal playback from that exact point.
 - Press Left/Right while paused to skip ±10 seconds.
